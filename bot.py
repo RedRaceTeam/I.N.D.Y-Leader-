@@ -65,7 +65,7 @@ def indycar(message):
     try:
         # ПРАВИЛЬНЫЙ ВЫЗОВ СОГЛАСНО ДОКУМЕНТАЦИИ APIFY
         run_input = {
-            "season": 2026,
+            "season": "2026",
             "maxItems": 5
         }
         run = client.actor("parseforge/indycar-stats-scraper").call(run_input=run_input)
