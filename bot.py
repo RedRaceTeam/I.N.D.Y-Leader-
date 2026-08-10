@@ -2,7 +2,7 @@ import os
 import telebot
 from apify_client import ApifyClient
 
-# ========== ТОКЕНЫ ==========
+# ========== ТОКЕНЫ ИЗ ПЕРЕМЕННЫХ ОКРУЖЕНИЯ ==========
 TOKEN = os.getenv("BOT_TOKEN")
 APIFY_TOKEN = os.getenv("APIFY_TOKEN")
 
@@ -63,10 +63,12 @@ def indycar(message):
     bot.reply_to(message, "🏁 Собираю данные IndyCar...")
 
     try:
-        run = client.actor("parseforge/indycar-stats-scraper").call({
+        # ПРАВИЛЬНЫЙ ВЫЗОВ СОГЛАСНО ДОКУМЕНТАЦИИ APIFY
+        run_input = {
             "season": 2026,
             "maxItems": 5
-        })
+        }
+        run = client.actor("parseforge/indycar-stats-scraper").call(run_input=run_input)
 
         dataset = client.dataset(run["defaultDatasetId"])
         items = dataset.list_items().items
