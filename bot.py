@@ -1,18 +1,13 @@
 import os
 import telebot
-from apify_client import ApifyClient
+import requests
 
-# ========== ТОКЕНЫ ИЗ ПЕРЕМЕННЫХ ОКРУЖЕНИЯ ==========
 TOKEN = os.getenv("BOT_TOKEN")
-APIFY_TOKEN = os.getenv("APIFY_TOKEN")
-
 if not TOKEN:
-    raise ValueError("BOT_TOKEN не найден в переменных окружения")
+    raise ValueError("BOT_TOKEN не найден")
 
 bot = telebot.TeleBot(TOKEN)
-client = ApifyClient(token=APIFY_TOKEN)
 
-# ========== БАЗА ГОНЩИКОВ ==========
 DRIVERS = {
     "PAL": {"name": "Alex Palou", "team": "Chip Ganassi Racing", "number": 10},
     "MCL": {"name": "Scott McLaughlin", "team": "Team Penske", "number": 3},
@@ -42,7 +37,6 @@ DRIVERS = {
     "SCH": {"name": "Mick Schumacher", "team": "Rahal Letterman Lanigan Racing", "number": 47},
 }
 
-# ========== КОМАНДЫ ==========
 @bot.message_handler(commands=['start'])
 def start(message):
     bot.reply_to(message, "👋 Привет! Я INDY Leader.\n\nИспользуй /help для списка команд.")
@@ -50,7 +44,6 @@ def start(message):
 @bot.message_handler(commands=['help'])
 def help_command(message):
     text = """📋 Доступные команды:
-
 /start — приветствие
 /help — список команд
 /indycar — топ-5 гонщиков
@@ -63,26 +56,32 @@ def indycar(message):
     bot.reply_to(message, "🏁 Собираю данные IndyCar...")
 
     try:
-        # ПРАВИЛЬНЫЙ ВЫЗОВ СОГЛАСНО ДОКУМЕНТАЦИИ APIFY
-        run_input = {
-            "season": "2026",
-            "maxItems": 5
-        }
-        run = client.actor("parseforge/indycar-stats-scraper").call(run_input=run_input)
+        # Используем ESPN API для получения актуальных данных IndyCar
+        url = "https://site.api.espn.com/apis/site/v2/sports/racing/irl/scoreboard"
+        response = requests.get(url, timeout=10)
+        response.raise_for_status()
+        data = response.json()
 
-        dataset = client.dataset(run["defaultDatasetId"])
-        items = dataset.list_items().items
+        # Извлекаем сезон и календарь
+        season = data.get('leagues', [{}])[0].get('season', {})
+        year = season.get('year', '2026')
 
-        if not items:
-            bot.reply_to(message, "❌ Данных пока нет.")
+        # Формируем список гонок из календаря
+        calendar = data.get('leagues', [{}])[0].get('calendar', [])
+        if not calendar:
+            bot.reply_to(message, "❌ Данных о гонках пока нет.")
             return
 
-        text = "🏁 **Топ-5 IndyCar**\n\n"
-        for item in items[:5]:
-            rank = item.get('rank', '—')
-            driver = item.get('driver', 'Неизвестно')
-            points = item.get('points', '—')
-            text += f"{rank}. {driver} — {points} очков\n"
+        text = f"🏁 **IndyCar {year}**\n"
+        text += "📅 **Календарь гонок**\n\n"
+        for event in calendar[:5]:
+            label = event.get('label', 'Неизвестно')
+            start_date = event.get('startDate', '')
+            if start_date:
+                date_str = start_date[:10]  # Берем только дату
+                text += f"• {label} — {date_str}\n"
+            else:
+                text += f"• {label}\n"
 
         bot.reply_to(message, text)
 
@@ -114,6 +113,9 @@ def list_drivers(message):
         text += f"{code} — {data['name']}\n"
     bot.reply_to(message, text, parse_mode="HTML")
 
-# ========== ЗАПУСК ==========
+@bot.message_handler(func=lambda m: True)
+def echo_all(message):
+    bot.reply_to(message, "❓ Неизвестна команда. Используй /help.")
+
 print("🤖 INDY Leader запущен!")
 bot.polling()
