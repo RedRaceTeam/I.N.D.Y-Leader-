@@ -1,62 +1,45 @@
 import os
 import telebot
 from apify_client import ApifyClient
-from dotenv import load_dotenv
-
-load_dotenv()
 
 # ========== ТОКЕНЫ ==========
 TOKEN = os.getenv("BOT_TOKEN")
 APIFY_TOKEN = os.getenv("APIFY_TOKEN")
 
 if not TOKEN:
-    raise ValueError("BOT_TOKEN не найден в .env")
+    raise ValueError("BOT_TOKEN не найден в переменных окружения")
 
 bot = telebot.TeleBot(TOKEN)
 client = ApifyClient(token=APIFY_TOKEN)
 
 # ========== БАЗА ГОНЩИКОВ ==========
 DRIVERS = {
-    # Arrow McLaren
-    "OWA": {"name": "Pato O'Ward", "team": "Arrow McLaren", "number": 5},
-    "LUN": {"name": "Christian Lundgaard", "team": "Arrow McLaren", "number": 7},
-    "SIE": {"name": "Nolan Siegel", "team": "Arrow McLaren", "number": 6},
-    # Team Penske
-    "NEW": {"name": "Josef Newgarden", "team": "Team Penske", "number": 2},
-    "MCL": {"name": "Scott McLaughlin", "team": "Team Penske", "number": 3},
-    "MAL": {"name": "David Malukas", "team": "Team Penske", "number": 12},
-    # Chip Ganassi Racing
-    "DIX": {"name": "Scott Dixon", "team": "Chip Ganassi Racing", "number": 9},
     "PAL": {"name": "Alex Palou", "team": "Chip Ganassi Racing", "number": 10},
-    "SIM": {"name": "Kyffin Simpson", "team": "Chip Ganassi Racing", "number": 8},
-    # Andretti Global
-    "POW": {"name": "Will Power", "team": "Andretti Global", "number": 26},
+    "MCL": {"name": "Scott McLaughlin", "team": "Team Penske", "number": 3},
+    "MAL": {"name": "David Malukas", "team": "Meyer Shank Racing", "number": 6},
     "KIR": {"name": "Kyle Kirkwood", "team": "Andretti Global", "number": 27},
-    "ERI": {"name": "Marcus Ericsson", "team": "Andretti Global", "number": 28},
-    # Rahal Letterman Lanigan Racing
-    "RAH": {"name": "Graham Rahal", "team": "Rahal Letterman Lanigan Racing", "number": 15},
-    "FOS": {"name": "Louis Foster", "team": "Rahal Letterman Lanigan Racing", "number": 45},
-    "SCH": {"name": "Mick Schumacher", "team": "Rahal Letterman Lanigan Racing", "number": 47},
-    # A.J. Foyt Enterprises
-    "FER": {"name": "Santino Ferrucci", "team": "A.J. Foyt Enterprises", "number": 14},
-    "COL": {"name": "Caio Collet", "team": "A.J. Foyt Enterprises", "number": 4},
-    # Ed Carpenter Racing
-    "CAR": {"name": "Ed Carpenter", "team": "Ed Carpenter Racing", "number": 33},
-    "RAS": {"name": "Christian Rasmussen", "team": "Ed Carpenter Racing", "number": 21},
-    "ROS": {"name": "Alexander Rossi", "team": "Ed Carpenter Racing", "number": 20},
-    # Meyer Shank Racing
+    "LUN": {"name": "Christian Lundgaard", "team": "Arrow McLaren", "number": 7},
+    "OWA": {"name": "Pato O'Ward", "team": "Arrow McLaren", "number": 5},
     "CAS": {"name": "Helio Castroneves", "team": "Meyer Shank Racing", "number": 6},
-    "ROS": {"name": "Felix Rosenqvist", "team": "Meyer Shank Racing", "number": 60},
+    "COL": {"name": "Caio Collet", "team": "A.J. Foyt Enterprises", "number": 4},
     "ARM": {"name": "Marcus Armstrong", "team": "Meyer Shank Racing", "number": 66},
-    # Dale Coyne Racing
-    "GRO": {"name": "Romain Grosjean", "team": "Dale Coyne Racing", "number": 18},
-    "HAU": {"name": "Dennis Hauger", "team": "Dale Coyne Racing", "number": 19},
-    # Juncos Hollinger Racing
-    "VEE": {"name": "Rinus VeeKay", "team": "Juncos Hollinger Racing", "number": 76},
-    "ROB": {"name": "Sting Ray Robb", "team": "Juncos Hollinger Racing", "number": 77},
-    # PREMA Racing
+    "RAS": {"name": "Christian Rasmussen", "team": "Ed Carpenter Racing", "number": 21},
     "SHW": {"name": "Robert Shwartzman", "team": "PREMA Racing", "number": 83},
+    "SIE": {"name": "Nolan Siegel", "team": "Arrow McLaren", "number": 6},
+    "SIM": {"name": "Kyffin Simpson", "team": "Chip Ganassi Racing", "number": 8},
+    "FOS": {"name": "Louis Foster", "team": "Rahal Letterman Lanigan Racing", "number": 45},
+    "HAU": {"name": "Dennis Hauger", "team": "Dale Coyne Racing", "number": 19},
+    "VEE": {"name": "Rinus VeeKay", "team": "Juncos Hollinger Racing", "number": 76},
+    "ERI": {"name": "Marcus Ericsson", "team": "Andretti Global", "number": 28},
+    "RAH": {"name": "Graham Rahal", "team": "Rahal Letterman Lanigan Racing", "number": 15},
+    "GRO": {"name": "Romain Grosjean", "team": "Dale Coyne Racing", "number": 18},
+    "POW": {"name": "Will Power", "team": "Andretti Global", "number": 26},
+    "DIX": {"name": "Scott Dixon", "team": "Chip Ganassi Racing", "number": 9},
+    "ROS": {"name": "Felix Rosenqvist", "team": "Meyer Shank Racing", "number": 60},
+    "ROSS": {"name": "Alexander Rossi", "team": "Ed Carpenter Racing", "number": 20},
+    "NEW": {"name": "Josef Newgarden", "team": "Team Penske", "number": 2},
     "ILO": {"name": "Callum Ilott", "team": "PREMA Racing", "number": 90},
+    "SCH": {"name": "Mick Schumacher", "team": "Rahal Letterman Lanigan Racing", "number": 47},
 }
 
 # ========== КОМАНДЫ ==========
