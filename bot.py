@@ -1,7 +1,8 @@
 import os
 import telebot
 import requests
-from bs4 import BeautifulSoup
+import random
+from data.winners import WINNERS  # импортируем данные о победителях
 
 TOKEN = os.getenv("BOT_TOKEN")
 if not TOKEN:
@@ -9,7 +10,6 @@ if not TOKEN:
 
 bot = telebot.TeleBot(TOKEN)
 
-# БАЗА ДАННЫХ ГОНЩИКОВ С ПОЗИЦИЯМИ В ЧЕМПИОНАТЕ
 DRIVERS = {
     "PAL": {"name": "Alex Palou", "team": "Chip Ganassi Racing", "number": 10, "pos": 1},
     "KIR": {"name": "Kyle Kirkwood", "team": "Andretti Global", "number": 27, "pos": 2},
@@ -52,8 +52,11 @@ def help_command(message):
 /start — приветствие
 /help — список команд
 /indycar — календарь + топ‑5
-/info <код> — информация о гонщике (позиция, очки)
-/drivers — список всех кодов"""
+/info <код> — информация о гонщике
+/drivers — список всех кодов
+/winner <год> — победитель Indy 500 за указанный год
+/indy500 <год> — то же самое, что /winner
+/youinindy — случайный пилот"""
     bot.reply_to(message, text)
 
 @bot.message_handler(commands=['indycar'])
@@ -61,13 +64,11 @@ def indycar(message):
     bot.reply_to(message, "🏁 Собираю данные IndyCar...")
 
     try:
-        # КАЛЕНДАРЬ
         url_cal = "https://site.api.espn.com/apis/site/v2/sports/racing/irl/scoreboard"
         resp = requests.get(url_cal, timeout=10)
         resp.raise_for_status()
         data = resp.json()
 
-        # ПОЛНЫЙ ТОП‑5 ИЗ ТВОЕЙ БАЗЫ
         top5 = sorted(
             [d for d in DRIVERS.values() if d.get("pos") and d["pos"] <= 5],
             key=lambda x: x["pos"]
@@ -78,20 +79,21 @@ def indycar(message):
             lines.append(f"{d['pos']}. {d['name']} — {d['team']}")
         lines.append("")
 
-        # КАЛЕНДАРЬ
         calendar = data.get('leagues', [{}])[0].get('calendar', [])
         if calendar:
             lines.append("📅 **Ближайшие гонки**")
             for event in calendar[:3]:
                 label = event.get('label', 'Неизвестно')
-                start = event.get('startDate', '')
-                date_str = start[:10] if start else ''
+                start_date = event.get('startDate', '')
+                date_str = start_date[:10] if start_date else ''
                 lines.append(f"• {label} — {date_str}" if date_str else f"• {label}")
 
         bot.reply_to(message, "\n".join(lines))
 
-    except Exception as e:
-        bot.reply_to(message, f"⚠️ Ошибка: {e}")
+    except requests.exceptions.RequestException:
+        bot.reply_to(message, "⚠️ Не удалось загрузить календарь. Попробуй позже.")
+    except Exception:
+        bot.reply_to(message, "⚠️ Ошибка при обработке данных.")
 
 @bot.message_handler(commands=['info'])
 def driver_info(message):
@@ -119,9 +121,34 @@ def list_drivers(message):
         text += f"{code} — {d['name']}\n"
     bot.reply_to(message, text, parse_mode="HTML")
 
-@bot.message_handler(func=lambda m: True)
-def echo_all(message):
-    bot.reply_to(message, "❓ Неизвестная команда. Используй /help.")
+@bot.message_handler(commands=['winner', 'indy500'])
+def get_winner(message):
+    try:
+        year = int(message.text.split()[1])
+    except (IndexError, ValueError):
+        bot.reply_to(message, "❌ Укажи год. Например: /winner 2020")
+        return
+
+    winner_data = WINNERS.get(year)
+    if not winner_data:
+        bot.reply_to(message, f"❌ Нет данных о победителе за {year} год.")
+        return
+
+    text = f"🏆 **Indy 500 {year}**\n"
+    text += f"🏁 Победитель: {winner_data['winner']}\n"
+    text += f"🏎️ Команда: {winner_data['team']}\n"
+    text += f"🌍 Страна: {winner_data['country']}"
+    bot.reply_to(message, text, parse_mode="Markdown")
+
+@bot.message_handler(commands=['youinindy'])
+def random_driver(message):
+    code, d = random.choice(list(DRIVERS.items()))
+    text = f"🎲 Тебе выпал:\n\n🏎️ <b>{d['name']}</b>\n"
+    text += f"🏁 Команда: {d['team']}\n"
+    text += f"🔢 Номер: {d['number']}"
+    bot.reply_to(message, text, parse_mode="HTML")
+
+# Убираем echo_all — бот не реагирует на левые сообщения
 
 print("🤖 INDY Leader запущен!")
 bot.polling()
