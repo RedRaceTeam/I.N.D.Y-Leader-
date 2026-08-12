@@ -4,6 +4,7 @@ import telebot
 import requests
 import random
 import uvicorn
+from datetime import datetime
 from fastapi import FastAPI, Request, Response
 from data.winners import winners
 
@@ -87,20 +88,36 @@ def indycar(message):
             lines.append(f"{d['pos']}. {d['name']} — {d['team']}")
         lines.append("")
 
+        # --- ФИКС КАЛЕНДАРЯ: только будущие гонки ---
         calendar = data.get('leagues', [{}])[0].get('calendar', [])
         if calendar:
-            lines.append("📅 **Ближайшие гонки**")
-            for event in calendar[:3]:
-                label = event.get('label', 'Неизвестно')
+            now = datetime.now().date()
+            future_events = []
+            for event in calendar:
                 start_date = event.get('startDate', '')
-                date_str = start_date[:10] if start_date else ''
-                lines.append(f"• {label} — {date_str}" if date_str else f"• {label}")
+                if start_date:
+                    try:
+                        event_date = datetime.fromisoformat(start_date[:10]).date()
+                        if event_date >= now:
+                            future_events.append(event)
+                    except ValueError:
+                        continue  # если дата кривая — пропускаем
+            
+            if future_events:
+                lines.append("📅 **Ближайшие гонки**")
+                for event in future_events[:3]:
+                    label = event.get('label', 'Неизвестно')
+                    start_date = event.get('startDate', '')
+                    date_str = start_date[:10] if start_date else ''
+                    lines.append(f"• {label} — {date_str}" if date_str else f"• {label}")
+            else:
+                lines.append("📅 Сезон завершён или расписание не загружено")
 
         bot.reply_to(message, "\n".join(lines))
     except requests.exceptions.RequestException:
         bot.reply_to(message, "⚠️ Не удалось загрузить календарь. Попробуй позже.")
-    except Exception:
-        bot.reply_to(message, "⚠️ Ошибка при обработке данных.")
+    except Exception as e:
+        bot.reply_to(message, f"⚠️ Ошибка при обработке данных: {e}")
 
 @bot.message_handler(commands=['info'])
 def driver_info(message):
