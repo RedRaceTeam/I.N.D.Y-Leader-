@@ -124,3 +124,5 @@ MIT © P4/9
 
 by P4/9 <3 · @RedRaceF1
 Collaborators: @Gabriella88
+
+[![Поддержать на DonationAlerts](https://img.shields.io/badge/Donate-DonationAlerts-ff69b4?style=for-the-badge&logo=heart)](https://www.donationalerts.com/r/kimi_redrace)
