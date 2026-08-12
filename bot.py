@@ -1,15 +1,23 @@
 import os
+import json
 import telebot
 import requests
 import random
-from data.winners import winners  # правильный импорт
+import uvicorn
+from fastapi import FastAPI, Request, Response
+from data.winners import winners
 
+# --- КОНФИГ ---
 TOKEN = os.getenv("BOT_TOKEN")
 if not TOKEN:
-    raise ValueError("BOT_TOKEN не найден")
+    raise ValueError("BOT_TOKEN не найден в переменных окружения")
+
+WEBHOOK_URL = "https://turbo-train-2b9d.onrender.com/webhook"
 
 bot = telebot.TeleBot(TOKEN)
+app = FastAPI()
 
+# --- БАЗА ГОНЩИКОВ ---
 DRIVERS = {
     "PAL": {"name": "Alex Palou", "team": "Chip Ganassi Racing", "number": 10, "pos": 1},
     "KIR": {"name": "Kyle Kirkwood", "team": "Andretti Global", "number": 27, "pos": 2},
@@ -42,6 +50,7 @@ DRIVERS = {
     "SHW": {"name": "Robert Shwartzman", "team": "PREMA Racing", "number": 83, "pos": 33},
 }
 
+# --- ХЕНДЛЕРЫ КОМАНД ---
 @bot.message_handler(commands=['start'])
 def start(message):
     bot.reply_to(message, "👋 Привет! Я INDY Leader.\n\nИспользуй /help для списка команд.")
@@ -62,7 +71,6 @@ def help_command(message):
 @bot.message_handler(commands=['indycar'])
 def indycar(message):
     bot.reply_to(message, "🏁 Собираю данные IndyCar...")
-
     try:
         url_cal = "https://site.api.espn.com/apis/site/v2/sports/racing/irl/scoreboard"
         resp = requests.get(url_cal, timeout=10)
@@ -89,7 +97,6 @@ def indycar(message):
                 lines.append(f"• {label} — {date_str}" if date_str else f"• {label}")
 
         bot.reply_to(message, "\n".join(lines))
-
     except requests.exceptions.RequestException:
         bot.reply_to(message, "⚠️ Не удалось загрузить календарь. Попробуй позже.")
     except Exception:
@@ -129,7 +136,7 @@ def get_winner(message):
         bot.reply_to(message, "❌ Укажи год. Например: /winner 2020")
         return
 
-    for entry in winners:  # используем правильную переменную
+    for entry in winners:
         if entry.get("year") == year:
             driver = entry.get("driver", "Неизвестно")
             text = f"🏆 **Indy 500 {year}**\n"
@@ -147,5 +154,26 @@ def random_driver(message):
     text += f"🔢 Номер: {d['number']}"
     bot.reply_to(message, text, parse_mode="HTML")
 
-print("🤖 INDY Leader запущен!")
-bot.polling()
+# --- WEBHOOK ЭНДПОИНТЫ ---
+@app.post("/webhook")
+async def webhook(request: Request):
+    data = await request.json()
+    update = telebot.types.Update.de_json(data)
+    bot.process_new_updates([update])
+    return Response(content="OK", status_code=200)
+
+@app.get("/")
+def root():
+    return {"status": "INDY Leader is running", "webhook_url": WEBHOOK_URL}
+
+# --- УСТАНОВКА ВЕБХУКА ---
+def set_webhook():
+    bot.remove_webhook()
+    bot.set_webhook(url=WEBHOOK_URL)
+    print(f"✅ Webhook установлен: {WEBHOOK_URL}")
+
+# --- ЗАПУСК ---
+if __name__ == "__main__":
+    set_webhook()
+    port = int(os.getenv("PORT", 8000))
+    uvicorn.run(app, host="0.0.0.0", port=port)
