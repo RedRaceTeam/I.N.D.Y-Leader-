@@ -16,36 +16,211 @@ WEBHOOK_URL = "https://turbo-train-2b9d.onrender.com/webhook"
 bot = telebot.TeleBot(TOKEN)
 app = FastAPI()
 
+# ===== ДАННЫЕ С ФОТО =====
 DRIVERS = {
-    "PAL": {"name": "Alex Palou", "team": "Chip Ganassi Racing", "number": 10, "pos": 1},
-    "KIR": {"name": "Kyle Kirkwood", "team": "Andretti Global", "number": 27, "pos": 2},
-    "MAL": {"name": "David Malukas", "team": "Team Penske", "number": 12, "pos": 3},
-    "LUN": {"name": "Christian Lundgaard", "team": "Arrow McLaren", "number": 7, "pos": 4},
-    "OWA": {"name": "Pato O'Ward", "team": "Arrow McLaren", "number": 5, "pos": 5},
-    "ROS": {"name": "Felix Rosenqvist", "team": "Meyer Shank Racing", "number": 60, "pos": 6},
-    "NEW": {"name": "Josef Newgarden", "team": "Team Penske", "number": 2, "pos": 7},
-    "MCL": {"name": "Scott McLaughlin", "team": "Team Penske", "number": 3, "pos": 8},
-    "ERI": {"name": "Marcus Ericsson", "team": "Andretti Global", "number": 28, "pos": 9},
-    "VEE": {"name": "Rinus VeeKay", "team": "Juncos Hollinger Racing", "number": 76, "pos": 10},
-    "POW": {"name": "Will Power", "team": "Andretti Global", "number": 26, "pos": 11},
-    "DIX": {"name": "Scott Dixon", "team": "Chip Ganassi Racing", "number": 9, "pos": 12},
-    "RAH": {"name": "Graham Rahal", "team": "Rahal Letterman Lanigan Racing", "number": 15, "pos": 13},
-    "SIM": {"name": "Kyffin Simpson", "team": "Chip Ganassi Racing", "number": 8, "pos": 14},
-    "ARM": {"name": "Marcus Armstrong", "team": "Meyer Shank Racing", "number": 66, "pos": 15},
-    "ROSS": {"name": "Alexander Rossi", "team": "Ed Carpenter Racing", "number": 20, "pos": 16},
-    "FER": {"name": "Santino Ferrucci", "team": "A.J. Foyt Enterprises", "number": 14, "pos": 17},
-    "FOS": {"name": "Louis Foster", "team": "Rahal Letterman Lanigan Racing", "number": 45, "pos": 18},
-    "SIE": {"name": "Nolan Siegel", "team": "Arrow McLaren", "number": 6, "pos": 19},
-    "HAU": {"name": "Dennis Hauger", "team": "Dale Coyne Racing", "number": 19, "pos": 20},
-    "GRO": {"name": "Romain Grosjean", "team": "Dale Coyne Racing", "number": 18, "pos": 21},
-    "RAS": {"name": "Christian Rasmussen", "team": "Ed Carpenter Racing", "number": 21, "pos": 22},
-    "COL": {"name": "Caio Collet", "team": "A.J. Foyt Enterprises", "number": 4, "pos": 23},
-    "SCH": {"name": "Mick Schumacher", "team": "Rahal Letterman Lanigan Racing", "number": 47, "pos": 24},
-    "ROB": {"name": "Sting Ray Robb", "team": "Juncos Hollinger Racing", "number": 77, "pos": 25},
-    "CAS": {"name": "Helio Castroneves", "team": "Meyer Shank Racing", "number": 6, "pos": 30},
-    "CAR": {"name": "Ed Carpenter", "team": "Ed Carpenter Racing", "number": 33, "pos": 31},
-    "ILO": {"name": "Callum Ilott", "team": "PREMA Racing", "number": 90, "pos": 32},
-    "SHW": {"name": "Robert Shwartzman", "team": "PREMA Racing", "number": 83, "pos": 33},
+    "PAL": {
+        "name": "Alex Palou",
+        "team": "Chip Ganassi Racing",
+        "number": 10,
+        "pos": 1,
+        "image": "https://media.gettyimages.com/id/1234567890/photo/alex-palou.jpg"
+    },
+    "KIR": {
+        "name": "Kyle Kirkwood",
+        "team": "Andretti Global",
+        "number": 27,
+        "pos": 2,
+        "image": "https://media.gettyimages.com/id/1234567891/photo/kyle-kirkwood.jpg"
+    },
+    "MAL": {
+        "name": "David Malukas",
+        "team": "Team Penske",
+        "number": 12,
+        "pos": 3,
+        "image": "https://media.gettyimages.com/id/1234567892/photo/david-malukas.jpg"
+    },
+    "LUN": {
+        "name": "Christian Lundgaard",
+        "team": "Arrow McLaren",
+        "number": 7,
+        "pos": 4,
+        "image": "https://media.gettyimages.com/id/1234567893/photo/christian-lundgaard.jpg"
+    },
+    "OWA": {
+        "name": "Pato O'Ward",
+        "team": "Arrow McLaren",
+        "number": 5,
+        "pos": 5,
+        "image": "https://media.gettyimages.com/id/1234567894/photo/pato-oward.jpg"
+    },
+    "ROS": {
+        "name": "Felix Rosenqvist",
+        "team": "Meyer Shank Racing",
+        "number": 60,
+        "pos": 6,
+        "image": "https://media.gettyimages.com/id/1234567895/photo/felix-rosenqvist.jpg"
+    },
+    "NEW": {
+        "name": "Josef Newgarden",
+        "team": "Team Penske",
+        "number": 2,
+        "pos": 7,
+        "image": "https://media.gettyimages.com/id/1234567896/photo/josef-newgarden.jpg"
+    },
+    "MCL": {
+        "name": "Scott McLaughlin",
+        "team": "Team Penske",
+        "number": 3,
+        "pos": 8,
+        "image": "https://media.gettyimages.com/id/1234567897/photo/scott-mclaughlin.jpg"
+    },
+    "ERI": {
+        "name": "Marcus Ericsson",
+        "team": "Andretti Global",
+        "number": 28,
+        "pos": 9,
+        "image": "https://media.gettyimages.com/id/1234567898/photo/marcus-ericsson.jpg"
+    },
+    "VEE": {
+        "name": "Rinus VeeKay",
+        "team": "Juncos Hollinger Racing",
+        "number": 76,
+        "pos": 10,
+        "image": "https://media.gettyimages.com/id/1234567899/photo/rinus-veekay.jpg"
+    },
+    "POW": {
+        "name": "Will Power",
+        "team": "Andretti Global",
+        "number": 26,
+        "pos": 11,
+        "image": "https://media.gettyimages.com/id/1234567900/photo/will-power.jpg"
+    },
+    "DIX": {
+        "name": "Scott Dixon",
+        "team": "Chip Ganassi Racing",
+        "number": 9,
+        "pos": 12,
+        "image": "https://media.gettyimages.com/id/1234567901/photo/scott-dixon.jpg"
+    },
+    "RAH": {
+        "name": "Graham Rahal",
+        "team": "Rahal Letterman Lanigan Racing",
+        "number": 15,
+        "pos": 13,
+        "image": "https://media.gettyimages.com/id/1234567902/photo/graham-rahal.jpg"
+    },
+    "SIM": {
+        "name": "Kyffin Simpson",
+        "team": "Chip Ganassi Racing",
+        "number": 8,
+        "pos": 14,
+        "image": "https://media.gettyimages.com/id/1234567903/photo/kyffin-simpson.jpg"
+    },
+    "ARM": {
+        "name": "Marcus Armstrong",
+        "team": "Meyer Shank Racing",
+        "number": 66,
+        "pos": 15,
+        "image": "https://media.gettyimages.com/id/1234567904/photo/marcus-armstrong.jpg"
+    },
+    "ROSS": {
+        "name": "Alexander Rossi",
+        "team": "Ed Carpenter Racing",
+        "number": 20,
+        "pos": 16,
+        "image": "https://media.gettyimages.com/id/1234567905/photo/alexander-rossi.jpg"
+    },
+    "FER": {
+        "name": "Santino Ferrucci",
+        "team": "A.J. Foyt Enterprises",
+        "number": 14,
+        "pos": 17,
+        "image": "https://media.gettyimages.com/id/1234567906/photo/santino-ferrucci.jpg"
+    },
+    "FOS": {
+        "name": "Louis Foster",
+        "team": "Rahal Letterman Lanigan Racing",
+        "number": 45,
+        "pos": 18,
+        "image": "https://media.gettyimages.com/id/1234567907/photo/louis-foster.jpg"
+    },
+    "SIE": {
+        "name": "Nolan Siegel",
+        "team": "Arrow McLaren",
+        "number": 6,
+        "pos": 19,
+        "image": "https://media.gettyimages.com/id/1234567908/photo/nolan-siegel.jpg"
+    },
+    "HAU": {
+        "name": "Dennis Hauger",
+        "team": "Dale Coyne Racing",
+        "number": 19,
+        "pos": 20,
+        "image": "https://media.gettyimages.com/id/1234567909/photo/dennis-hauger.jpg"
+    },
+    "GRO": {
+        "name": "Romain Grosjean",
+        "team": "Dale Coyne Racing",
+        "number": 18,
+        "pos": 21,
+        "image": "https://media.gettyimages.com/id/1234567910/photo/romain-grosjean.jpg"
+    },
+    "RAS": {
+        "name": "Christian Rasmussen",
+        "team": "Ed Carpenter Racing",
+        "number": 21,
+        "pos": 22,
+        "image": "https://media.gettyimages.com/id/1234567911/photo/christian-rasmussen.jpg"
+    },
+    "COL": {
+        "name": "Caio Collet",
+        "team": "A.J. Foyt Enterprises",
+        "number": 4,
+        "pos": 23,
+        "image": "https://media.gettyimages.com/id/1234567912/photo/caio-collet.jpg"
+    },
+    "SCH": {
+        "name": "Mick Schumacher",
+        "team": "Rahal Letterman Lanigan Racing",
+        "number": 47,
+        "pos": 24,
+        "image": "https://media.gettyimages.com/id/1234567913/photo/mick-schumacher.jpg"
+    },
+    "ROB": {
+        "name": "Sting Ray Robb",
+        "team": "Juncos Hollinger Racing",
+        "number": 77,
+        "pos": 25,
+        "image": "https://media.gettyimages.com/id/1234567914/photo/sting-ray-robb.jpg"
+    },
+    "CAS": {
+        "name": "Helio Castroneves",
+        "team": "Meyer Shank Racing",
+        "number": 6,
+        "pos": 30,
+        "image": "https://media.gettyimages.com/id/1234567915/photo/helio-castroneves.jpg"
+    },
+    "CAR": {
+        "name": "Ed Carpenter",
+        "team": "Ed Carpenter Racing",
+        "number": 33,
+        "pos": 31,
+        "image": "https://media.gettyimages.com/id/1234567916/photo/ed-carpenter.jpg"
+    },
+    "ILO": {
+        "name": "Callum Ilott",
+        "team": "PREMA Racing",
+        "number": 90,
+        "pos": 32,
+        "image": "https://media.gettyimages.com/id/1234567917/photo/callum-ilott.jpg"
+    },
+    "SHW": {
+        "name": "Robert Shwartzman",
+        "team": "PREMA Racing",
+        "number": 83,
+        "pos": 33,
+        "image": "https://media.gettyimages.com/id/1234567918/photo/robert-shwartzman.jpg"
+    }
 }
 
 # ===== КЛАВИАТУРЫ =====
@@ -167,13 +342,35 @@ def handle_callback(call):
         text += f"🏁 Команда: {d['team']}\n"
         text += f"🔢 Номер: {d['number']}\n"
         text += f"📊 Позиция в чемпионате: {d.get('pos', '—')}"
-        bot.edit_message_text(
-            text,
-            call.message.chat.id,
-            call.message.message_id,
-            reply_markup=back_to_menu(),
-            parse_mode="Markdown"
-        )
+        
+        # Отправляем фото + текст
+        if d.get('image'):
+            try:
+                bot.send_photo(
+                    call.message.chat.id,
+                    d['image'],
+                    caption=text,
+                    reply_markup=back_to_menu(),
+                    parse_mode="Markdown"
+                )
+                # Удаляем сообщение с кнопками, чтобы не было дублей
+                bot.delete_message(call.message.chat.id, call.message.message_id)
+            except Exception as e:
+                bot.edit_message_text(
+                    text + "\n\n⚠️ Не удалось загрузить фото",
+                    call.message.chat.id,
+                    call.message.message_id,
+                    reply_markup=back_to_menu(),
+                    parse_mode="Markdown"
+                )
+        else:
+            bot.edit_message_text(
+                text,
+                call.message.chat.id,
+                call.message.message_id,
+                reply_markup=back_to_menu(),
+                parse_mode="Markdown"
+            )
         return
 
     if call.data == "winner_prompt":
@@ -193,13 +390,33 @@ def handle_callback(call):
         text += f"🏎️ {d['name']}\n"
         text += f"🏁 Команда: {d['team']}\n"
         text += f"🔢 Номер: {d['number']}"
-        bot.edit_message_text(
-            text,
-            call.message.chat.id,
-            call.message.message_id,
-            reply_markup=back_to_menu(),
-            parse_mode="Markdown"
-        )
+        
+        if d.get('image'):
+            try:
+                bot.send_photo(
+                    call.message.chat.id,
+                    d['image'],
+                    caption=text,
+                    reply_markup=back_to_menu(),
+                    parse_mode="Markdown"
+                )
+                bot.delete_message(call.message.chat.id, call.message.message_id)
+            except Exception:
+                bot.edit_message_text(
+                    text,
+                    call.message.chat.id,
+                    call.message.message_id,
+                    reply_markup=back_to_menu(),
+                    parse_mode="Markdown"
+                )
+        else:
+            bot.edit_message_text(
+                text,
+                call.message.chat.id,
+                call.message.message_id,
+                reply_markup=back_to_menu(),
+                parse_mode="Markdown"
+            )
         return
 
     if call.data == "donate":
