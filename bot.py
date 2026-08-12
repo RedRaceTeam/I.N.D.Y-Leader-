@@ -1,24 +1,21 @@
 import os
-import json
 import telebot
 import requests
 import random
 import uvicorn
-from datetime import datetime
+from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 from fastapi import FastAPI, Request, Response
 from data.winners import winners
 
-# --- КОНФИГ ---
 TOKEN = os.getenv("BOT_TOKEN")
 if not TOKEN:
-    raise ValueError("BOT_TOKEN не найден в переменных окружения")
+    raise ValueError("BOT_TOKEN не найден")
 
 WEBHOOK_URL = "https://turbo-train-2b9d.onrender.com/webhook"
 
 bot = telebot.TeleBot(TOKEN)
 app = FastAPI()
 
-# --- БАЗА ГОНЩИКОВ ---
 DRIVERS = {
     "PAL": {"name": "Alex Palou", "team": "Chip Ganassi Racing", "number": 10, "pos": 1},
     "KIR": {"name": "Kyle Kirkwood", "team": "Andretti Global", "number": 27, "pos": 2},
@@ -51,106 +48,185 @@ DRIVERS = {
     "SHW": {"name": "Robert Shwartzman", "team": "PREMA Racing", "number": 83, "pos": 33},
 }
 
-# --- ХЕНДЛЕРЫ КОМАНД ---
+# ===== КЛАВИАТУРЫ =====
+def main_menu():
+    markup = InlineKeyboardMarkup(row_width=2)
+    markup.add(
+        InlineKeyboardButton("🏁 Топ-5 и календарь", callback_data="indycar"),
+        InlineKeyboardButton("🏎️ Инфо о гонщике", callback_data="info_list"),
+        InlineKeyboardButton("🏆 Победители Indy 500", callback_data="winner_prompt"),
+        InlineKeyboardButton("🎲 Случайный пилот", callback_data="random_driver"),
+        InlineKeyboardButton("❤️ Поддержать проект", callback_data="donate")
+    )
+    return markup
+
+def drivers_list_keyboard():
+    markup = InlineKeyboardMarkup(row_width=2)
+    buttons = []
+    for code, d in DRIVERS.items():
+        buttons.append(InlineKeyboardButton(f"{code} - {d['name']}", callback_data=f"driver_{code}"))
+    markup.add(*buttons)
+    return markup
+
+def back_to_menu():
+    markup = InlineKeyboardMarkup()
+    markup.add(InlineKeyboardButton("🔙 Назад в меню", callback_data="menu"))
+    return markup
+
+# ===== ОБРАБОТЧИКИ =====
 @bot.message_handler(commands=['start'])
 def start(message):
-    bot.reply_to(message, "👋 Привет! Я INDY Leader.\n\nИспользуй /help для списка команд.")
+    bot.send_message(
+        message.chat.id,
+        "🏁 **I.N.D.Y Leader**\n\n"
+        "Я бот для фанатов IndyCar. Что хочешь узнать?\n\n"
+        "• Топ-5 чемпионата и календарь\n"
+        "• Информацию о любом гонщике\n"
+        "• Победителей Indy 500 по годам\n"
+        "• Случайного пилота\n\n"
+        "Выбирай кнопку ниже 👇",
+        reply_markup=main_menu(),
+        parse_mode="Markdown"
+    )
 
-@bot.message_handler(commands=['help'])
-def help_command(message):
-    text = """📋 Доступные команды:
-/start — приветствие
-/help — список команд
-/indycar — календарь + топ‑5
-/info <код> — информация о гонщике
-/drivers — список всех кодов
-/winner <год> — победитель Indy 500 за указанный год
-/indy500 <год> — то же самое, что /winner
-/youinindy — случайный пилот"""
-    bot.reply_to(message, text)
-
-@bot.message_handler(commands=['indycar'])
-def indycar(message):
-    bot.reply_to(message, "🏁 Собираю данные IndyCar...")
-    try:
-        url_cal = "https://site.api.espn.com/apis/site/v2/sports/racing/irl/scoreboard"
-        resp = requests.get(url_cal, timeout=10)
-        resp.raise_for_status()
-        data = resp.json()
-
-        top5 = sorted(
-            [d for d in DRIVERS.values() if d.get("pos") and d["pos"] <= 5],
-            key=lambda x: x["pos"]
+@bot.callback_query_handler(func=lambda call: True)
+def handle_callback(call):
+    if call.data == "menu":
+        bot.edit_message_text(
+            "🏁 **I.N.D.Y Leader**\n\nГлавное меню. Что хочешь узнать?",
+            call.message.chat.id,
+            call.message.message_id,
+            reply_markup=main_menu(),
+            parse_mode="Markdown"
         )
+        return
 
-        lines = ["🏁 **Чемпионат IndyCar 2026**", "📊 **Топ‑5 пилотов**", ""]
-        for d in top5:
-            lines.append(f"{d['pos']}. {d['name']} — {d['team']}")
-        lines.append("")
+    if call.data == "indycar":
+        bot.edit_message_text(
+            "🏁 Собираю данные IndyCar...",
+            call.message.chat.id,
+            call.message.message_id
+        )
+        try:
+            url_cal = "https://site.api.espn.com/apis/site/v2/sports/racing/irl/scoreboard"
+            resp = requests.get(url_cal, timeout=10)
+            resp.raise_for_status()
+            data = resp.json()
 
-        # --- ФИКС КАЛЕНДАРЯ: только будущие гонки ---
-        calendar = data.get('leagues', [{}])[0].get('calendar', [])
-        if calendar:
-            now = datetime.now().date()
-            future_events = []
-            for event in calendar:
-                start_date = event.get('startDate', '')
-                if start_date:
-                    try:
-                        event_date = datetime.fromisoformat(start_date[:10]).date()
-                        if event_date >= now:
-                            future_events.append(event)
-                    except ValueError:
-                        continue  # если дата кривая — пропускаем
-            
-            if future_events:
+            top5 = sorted(
+                [d for d in DRIVERS.values() if d.get("pos") and d["pos"] <= 5],
+                key=lambda x: x["pos"]
+            )
+
+            lines = ["🏁 **Чемпионат IndyCar 2026**", "📊 **Топ-5 пилотов**", ""]
+            for d in top5:
+                lines.append(f"{d['pos']}. {d['name']} — {d['team']}")
+            lines.append("")
+
+            calendar = data.get('leagues', [{}])[0].get('calendar', [])
+            if calendar:
                 lines.append("📅 **Ближайшие гонки**")
-                for event in future_events[:3]:
+                for event in calendar[:3]:
                     label = event.get('label', 'Неизвестно')
                     start_date = event.get('startDate', '')
                     date_str = start_date[:10] if start_date else ''
                     lines.append(f"• {label} — {date_str}" if date_str else f"• {label}")
-            else:
-                lines.append("📅 Сезон завершён или расписание не загружено")
 
-        bot.reply_to(message, "\n".join(lines))
-    except requests.exceptions.RequestException:
-        bot.reply_to(message, "⚠️ Не удалось загрузить календарь. Попробуй позже.")
-    except Exception as e:
-        bot.reply_to(message, f"⚠️ Ошибка при обработке данных: {e}")
-
-@bot.message_handler(commands=['info'])
-def driver_info(message):
-    try:
-        code = message.text.split()[1].upper()
-    except IndexError:
-        bot.reply_to(message, "❌ Укажи код гонщика. Например: /info PAL")
+            bot.edit_message_text(
+                "\n".join(lines),
+                call.message.chat.id,
+                call.message.message_id,
+                reply_markup=back_to_menu(),
+                parse_mode="Markdown"
+            )
+        except Exception as e:
+            bot.edit_message_text(
+                f"⚠️ Ошибка: {e}",
+                call.message.chat.id,
+                call.message.message_id,
+                reply_markup=back_to_menu()
+            )
         return
 
-    d = DRIVERS.get(code)
-    if not d:
-        bot.reply_to(message, f"❌ Гонщик с кодом {code} не найден.")
+    if call.data == "info_list":
+        bot.edit_message_text(
+            "Выбери гонщика:",
+            call.message.chat.id,
+            call.message.message_id,
+            reply_markup=drivers_list_keyboard()
+        )
         return
 
-    text = f"🏎️ <b>{d['name']}</b>\n"
-    text += f"🏁 Команда: {d['team']}\n"
-    text += f"🔢 Номер: {d['number']}\n"
-    text += f"📊 Позиция в чемпионате: {d.get('pos', '—')}"
-    bot.reply_to(message, text, parse_mode="HTML")
+    if call.data.startswith("driver_"):
+        code = call.data.replace("driver_", "")
+        d = DRIVERS.get(code)
+        if not d:
+            bot.answer_callback_query(call.id, "Гонщик не найден")
+            return
+        text = f"🏎️ **{d['name']}**\n"
+        text += f"🏁 Команда: {d['team']}\n"
+        text += f"🔢 Номер: {d['number']}\n"
+        text += f"📊 Позиция в чемпионате: {d.get('pos', '—')}"
+        bot.edit_message_text(
+            text,
+            call.message.chat.id,
+            call.message.message_id,
+            reply_markup=back_to_menu(),
+            parse_mode="Markdown"
+        )
+        return
 
-@bot.message_handler(commands=['drivers'])
-def list_drivers(message):
-    text = "🏁 <b>Список кодов гонщиков</b>\n\n"
-    for code, d in DRIVERS.items():
-        text += f"{code} — {d['name']}\n"
-    bot.reply_to(message, text, parse_mode="HTML")
+    if call.data == "winner_prompt":
+        bot.edit_message_text(
+            "📅 **Введи год** (например, 2023):\n\n"
+            "Я покажу победителя Indy 500 за этот год.",
+            call.message.chat.id,
+            call.message.message_id,
+            reply_markup=back_to_menu()
+        )
+        bot.register_next_step_handler(call.message, handle_winner_year)
+        return
 
-@bot.message_handler(commands=['winner', 'indy500'])
-def get_winner(message):
+    if call.data == "random_driver":
+        code, d = random.choice(list(DRIVERS.items()))
+        text = f"🎲 **Тебе выпал:**\n\n"
+        text += f"🏎️ {d['name']}\n"
+        text += f"🏁 Команда: {d['team']}\n"
+        text += f"🔢 Номер: {d['number']}"
+        bot.edit_message_text(
+            text,
+            call.message.chat.id,
+            call.message.message_id,
+            reply_markup=back_to_menu(),
+            parse_mode="Markdown"
+        )
+        return
+
+    if call.data == "donate":
+        bot.edit_message_text(
+            "❤️ **Поддержать проект**\n\n"
+            "Если тебе нравится I.N.D.Y Leader — ты можешь поддержать развитие проекта.\n\n"
+            "💰 DonationAlerts: [тык сюда](https://www.donationalerts.com/r/kimi_redrace)\n\n"
+            "Спасибо, что ты с нами 🏁",
+            call.message.chat.id,
+            call.message.message_id,
+            reply_markup=back_to_menu(),
+            parse_mode="Markdown",
+            disable_web_page_preview=True
+        )
+        return
+
+    bot.answer_callback_query(call.id)
+
+def handle_winner_year(message):
     try:
-        year = int(message.text.split()[1])
-    except (IndexError, ValueError):
-        bot.reply_to(message, "❌ Укажи год. Например: /winner 2020")
+        year = int(message.text.strip())
+    except ValueError:
+        bot.send_message(
+            message.chat.id,
+            "❌ Это не похоже на год. Попробуй ещё раз.",
+            reply_markup=back_to_menu()
+        )
         return
 
     for entry in winners:
@@ -158,20 +234,21 @@ def get_winner(message):
             driver = entry.get("driver", "Неизвестно")
             text = f"🏆 **Indy 500 {year}**\n"
             text += f"🏁 Победитель: {driver}"
-            bot.reply_to(message, text, parse_mode="Markdown")
+            bot.send_message(
+                message.chat.id,
+                text,
+                reply_markup=back_to_menu(),
+                parse_mode="Markdown"
+            )
             return
 
-    bot.reply_to(message, f"❌ Нет данных о победителе за {year} год.")
+    bot.send_message(
+        message.chat.id,
+        f"❌ Нет данных о победителе за {year} год.",
+        reply_markup=back_to_menu()
+    )
 
-@bot.message_handler(commands=['youinindy'])
-def random_driver(message):
-    code, d = random.choice(list(DRIVERS.items()))
-    text = f"🎲 Тебе выпал:\n\n🏎️ <b>{d['name']}</b>\n"
-    text += f"🏁 Команда: {d['team']}\n"
-    text += f"🔢 Номер: {d['number']}"
-    bot.reply_to(message, text, parse_mode="HTML")
-
-# --- WEBHOOK ЭНДПОИНТЫ ---
+# ===== ВЕБХУК =====
 @app.post("/webhook")
 async def webhook(request: Request):
     data = await request.json()
@@ -183,13 +260,11 @@ async def webhook(request: Request):
 def root():
     return {"status": "INDY Leader is running", "webhook_url": WEBHOOK_URL}
 
-# --- УСТАНОВКА ВЕБХУКА ---
 def set_webhook():
     bot.remove_webhook()
     bot.set_webhook(url=WEBHOOK_URL)
     print(f"✅ Webhook установлен: {WEBHOOK_URL}")
 
-# --- ЗАПУСК ---
 if __name__ == "__main__":
     set_webhook()
     port = int(os.getenv("PORT", 8000))
