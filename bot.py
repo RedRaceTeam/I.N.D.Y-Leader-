@@ -2,7 +2,7 @@ import os
 import telebot
 import requests
 import random
-from data.winners import WINNERS  # импортируем данные о победителях
+from data.winners import winners  # правильный импорт
 
 TOKEN = os.getenv("BOT_TOKEN")
 if not TOKEN:
@@ -129,16 +129,15 @@ def get_winner(message):
         bot.reply_to(message, "❌ Укажи год. Например: /winner 2020")
         return
 
-    winner_data = WINNERS.get(year)
-    if not winner_data:
-        bot.reply_to(message, f"❌ Нет данных о победителе за {year} год.")
-        return
+    for entry in winners:  # используем правильную переменную
+        if entry.get("year") == year:
+            driver = entry.get("driver", "Неизвестно")
+            text = f"🏆 **Indy 500 {year}**\n"
+            text += f"🏁 Победитель: {driver}"
+            bot.reply_to(message, text, parse_mode="Markdown")
+            return
 
-    text = f"🏆 **Indy 500 {year}**\n"
-    text += f"🏁 Победитель: {winner_data['winner']}\n"
-    text += f"🏎️ Команда: {winner_data['team']}\n"
-    text += f"🌍 Страна: {winner_data['country']}"
-    bot.reply_to(message, text, parse_mode="Markdown")
+    bot.reply_to(message, f"❌ Нет данных о победителе за {year} год.")
 
 @bot.message_handler(commands=['youinindy'])
 def random_driver(message):
@@ -147,8 +146,6 @@ def random_driver(message):
     text += f"🏁 Команда: {d['team']}\n"
     text += f"🔢 Номер: {d['number']}"
     bot.reply_to(message, text, parse_mode="HTML")
-
-# Убираем echo_all — бот не реагирует на левые сообщения
 
 print("🤖 INDY Leader запущен!")
 bot.polling()
