@@ -3,6 +3,7 @@ import telebot
 import requests
 import random
 import uvicorn
+import threading
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 from fastapi import FastAPI, Request, Response
 from data.winners import winners
@@ -47,41 +48,46 @@ def back_to_menu():
 @bot.message_handler(commands=['start'])
 def start(message):
     bot.send_message(
-        message.chat.id,
-        "🏁 **I.N.D.Y Leader**\n\n"
-        "Я бот для фанатов IndyCar. Что хочешь узнать?\n\n"
-        "• Топ-5 чемпионата и календарь\n"
-        "• Информацию о любом гонщике\n"
-        "• Победителей Indy 500 по годам\n"
-        "• Случайного пилота\n\n"
-        "Выбирай кнопку ниже 👇",
+        chat_id=message.chat.id,
+        text="🏁 **I.N.D.Y Leader**\n\n"
+             "Я бот для фанатов IndyCar. Что хочешь узнать?\n\n"
+             "• Топ-5 чемпионата и календарь\n"
+             "• Информацию о любом гонщике\n"
+             "• Победителей Indy 500 по годам\n"
+             "• Случайного пилота\n\n"
+             "Выбирай кнопку ниже 👇",
         reply_markup=main_menu(),
         parse_mode="Markdown"
     )
 
 @bot.callback_query_handler(func=lambda call: True)
 def handle_callback(call):
-    # Сбрасываем все ожидания
+    # Проверка на пустое сообщение
+    if call.message is None:
+        bot.answer_callback_query(callback_query_id=call.id, text="Сообщение не найдено")
+        return
+
+    # Сброс всех ожиданий
     bot.clear_step_handler(call.message)
-    
-    # Назад в меню
+
+    # === КНОПКА НАЗАД ===
     if call.data == "menu":
         bot.edit_message_text(
-            "🏁 **I.N.D.Y Leader**\n\nГлавное меню. Что хочешь узнать?",
-            call.message.chat.id,
-            call.message.message_id,
+            chat_id=call.message.chat.id,
+            message_id=call.message.message_id,
+            text="🏁 **I.N.D.Y Leader**\n\nГлавное меню. Что хочешь узнать?",
             reply_markup=main_menu(),
             parse_mode="Markdown"
         )
-        bot.answer_callback_query(call.id)
+        bot.answer_callback_query(callback_query_id=call.id)
         return
 
-    # Топ-5 и календарь
+    # === ТОП-5 ===
     if call.data == "indycar":
         bot.edit_message_text(
-            "🏁 Собираю данные IndyCar...",
-            call.message.chat.id,
-            call.message.message_id
+            chat_id=call.message.chat.id,
+            message_id=call.message.message_id,
+            text="🏁 Собираю данные IndyCar..."
         )
         try:
             url_cal = "https://site.api.espn.com/apis/site/v2/sports/racing/irl/scoreboard"
@@ -109,177 +115,170 @@ def handle_callback(call):
                     lines.append(f"• {label} — {date_str}" if date_str else f"• {label}")
 
             bot.edit_message_text(
-                "\n".join(lines),
-                call.message.chat.id,
-                call.message.message_id,
+                chat_id=call.message.chat.id,
+                message_id=call.message.message_id,
+                text="\n".join(lines),
                 reply_markup=back_to_menu(),
                 parse_mode="Markdown"
             )
         except Exception as e:
             bot.edit_message_text(
-                "⚠️ Ошибка при загрузке данных. Возврат в меню.",
-                call.message.chat.id,
-                call.message.message_id,
+                chat_id=call.message.chat.id,
+                message_id=call.message.message_id,
+                text="⚠️ Ошибка при загрузке данных. Возврат в меню.",
                 reply_markup=main_menu()
             )
-        bot.answer_callback_query(call.id)
+        bot.answer_callback_query(callback_query_id=call.id)
         return
 
-    # Список гонщиков
+    # === СПИСОК ГОНЩИКОВ ===
     if call.data == "info_list":
         bot.edit_message_text(
-            "Выбери гонщика:",
-            call.message.chat.id,
-            call.message.message_id,
+            chat_id=call.message.chat.id,
+            message_id=call.message.message_id,
+            text="Выбери гонщика:",
             reply_markup=drivers_list_keyboard()
         )
-        bot.answer_callback_query(call.id)
+        bot.answer_callback_query(callback_query_id=call.id)
         return
 
-    # Инфа о гонщике
+    # === ИНФА О ГОНЩИКЕ ===
     if call.data.startswith("driver_"):
         code = call.data.replace("driver_", "")
         d = DRIVERS.get(code)
         if not d:
-            bot.answer_callback_query(call.id, "Гонщик не найден")
+            bot.answer_callback_query(callback_query_id=call.id, text="Гонщик не найден")
             return
-        
-        text = f"🏎️ **{d['name']}**\n"
-        text += f"🏁 Команда: {d['team']}\n"
-        text += f"🔢 Номер: {d['number']}\n"
-        text += f"📊 Позиция в чемпионате: {d.get('pos', '—')}"
-        
+
+        text = f"🏎️ **{d['name']}**\n🏁 Команда: {d['team']}\n🔢 Номер: {d['number']}\n📊 Позиция: {d.get('pos', '—')}"
+
         if d.get('image'):
             try:
                 bot.send_photo(
-                    call.message.chat.id,
-                    d['image'],
+                    chat_id=call.message.chat.id,
+                    photo=d['image'],
                     caption=text,
                     reply_markup=back_to_menu(),
                     parse_mode="Markdown"
                 )
-                bot.delete_message(call.message.chat.id, call.message.message_id)
+                bot.delete_message(chat_id=call.message.chat.id, message_id=call.message.message_id)
             except Exception:
                 bot.edit_message_text(
-                    text,
-                    call.message.chat.id,
-                    call.message.message_id,
+                    chat_id=call.message.chat.id,
+                    message_id=call.message.message_id,
+                    text=text,
                     reply_markup=back_to_menu(),
                     parse_mode="Markdown"
                 )
         else:
             bot.edit_message_text(
-                text,
-                call.message.chat.id,
-                call.message.message_id,
+                chat_id=call.message.chat.id,
+                message_id=call.message.message_id,
+                text=text,
                 reply_markup=back_to_menu(),
                 parse_mode="Markdown"
             )
-        bot.answer_callback_query(call.id)
+        bot.answer_callback_query(callback_query_id=call.id)
         return
 
-    # Запрос года для Indy 500
+    # === ЗАПРОС ГОДА ===
     if call.data == "winner_prompt":
         bot.edit_message_text(
-            "📅 **Введи год** (например, 2023):\n\n"
-            "Я покажу победителя Indy 500 за этот год.",
-            call.message.chat.id,
-            call.message.message_id,
+            chat_id=call.message.chat.id,
+            message_id=call.message.message_id,
+            text="📅 **Введи год** (например, 2023):\n\nЯ покажу победителя Indy 500 за этот год.",
             reply_markup=back_to_menu()
         )
         bot.register_next_step_handler(call.message, handle_winner_year)
-        bot.answer_callback_query(call.id)
+        bot.answer_callback_query(callback_query_id=call.id)
         return
 
-    # Случайный пилот
+    # === СЛУЧАЙНЫЙ ПИЛОТ ===
     if call.data == "random_driver":
         code, d = random.choice(list(DRIVERS.items()))
-        text = f"🎲 **Тебе выпал:**\n\n"
-        text += f"🏎️ {d['name']}\n"
-        text += f"🏁 Команда: {d['team']}\n"
-        text += f"🔢 Номер: {d['number']}"
-        
+        text = f"🎲 **Тебе выпал:**\n\n🏎️ {d['name']}\n🏁 Команда: {d['team']}\n🔢 Номер: {d['number']}"
+
         if d.get('image'):
             try:
                 bot.send_photo(
-                    call.message.chat.id,
-                    d['image'],
+                    chat_id=call.message.chat.id,
+                    photo=d['image'],
                     caption=text,
                     reply_markup=back_to_menu(),
                     parse_mode="Markdown"
                 )
-                bot.delete_message(call.message.chat.id, call.message.message_id)
+                bot.delete_message(chat_id=call.message.chat.id, message_id=call.message.message_id)
             except Exception:
                 bot.edit_message_text(
-                    text,
-                    call.message.chat.id,
-                    call.message.message_id,
+                    chat_id=call.message.chat.id,
+                    message_id=call.message.message_id,
+                    text=text,
                     reply_markup=back_to_menu(),
                     parse_mode="Markdown"
                 )
         else:
             bot.edit_message_text(
-                text,
-                call.message.chat.id,
-                call.message.message_id,
+                chat_id=call.message.chat.id,
+                message_id=call.message.message_id,
+                text=text,
                 reply_markup=back_to_menu(),
                 parse_mode="Markdown"
             )
-        bot.answer_callback_query(call.id)
+        bot.answer_callback_query(callback_query_id=call.id)
         return
 
-    # Донат
+    # === ДОНАТ ===
     if call.data == "donate":
         bot.edit_message_text(
-            "❤️ **Поддержать проект**\n\n"
-            "Если тебе нравится I.N.D.Y Leader — ты можешь поддержать развитие проекта.\n\n"
-            "💰 DonationAlerts: [тык сюда](https://www.donationalerts.com/r/kimi_redrace)\n\n"
-            "Спасибо, что ты с нами 🏁",
-            call.message.chat.id,
-            call.message.message_id,
+            chat_id=call.message.chat.id,
+            message_id=call.message.message_id,
+            text="❤️ **Поддержать проект**\n\n"
+                 "Если тебе нравится I.N.D.Y Leader — ты можешь поддержать развитие проекта.\n\n"
+                 "💰 DonationAlerts: [тык сюда](https://www.donationalerts.com/r/kimi_redrace)\n\n"
+                 "Спасибо, что ты с нами 🏁",
             reply_markup=back_to_menu(),
             parse_mode="Markdown",
             disable_web_page_preview=True
         )
-        bot.answer_callback_query(call.id)
+        bot.answer_callback_query(callback_query_id=call.id)
         return
 
-    # О проекте
+    # === О ПРОЕКТЕ ===
     if call.data == "about":
         bot.edit_message_text(
-            "📘 **О проекте I.N.D.Y Leader**\n\n"
-            "Это неофициальный Telegram-бот для фанатов IndyCar.\n"
-            "Мы используем открытые данные и официальные фото пилотов.\n\n"
-            "Проект создан для популяризации автоспорта.\n"
-            "Не связан с IndyCar Series, LLC.\n\n"
-            "🔗 Исходный код: [GitHub](https://github.com/RedRaceTeam/I.N.D.Y-Leader)\n"
-            "🧑‍💻 Разработка: @RedRaceF1, @Gabriella1488\n"
-            "💰 Поддержать: [DonationAlerts](https://www.donationalerts.com/r/kimi_redrace)",
-            call.message.chat.id,
-            call.message.message_id,
+            chat_id=call.message.chat.id,
+            message_id=call.message.message_id,
+            text="📘 **О проекте I.N.D.Y Leader**\n\n"
+                 "Это неофициальный Telegram-бот для фанатов IndyCar.\n"
+                 "Мы используем открытые данные и официальные фото пилотов.\n\n"
+                 "Проект создан для популяризации автоспорта.\n"
+                 "Не связан с IndyCar Series, LLC.\n\n"
+                 "🔗 Исходный код: [GitHub](https://github.com/RedRaceTeam/I.N.D.Y-Leader)\n"
+                 "🧑‍💻 Разработка: @RedRaceF1, @Gabriella1488\n"
+                 "💰 Поддержать: [DonationAlerts](https://www.donationalerts.com/r/kimi_redrace)",
             reply_markup=back_to_menu(),
             parse_mode="Markdown",
             disable_web_page_preview=True
         )
-        bot.answer_callback_query(call.id)
+        bot.answer_callback_query(callback_query_id=call.id)
         return
 
-    # Если ничего не подошло
-    bot.answer_callback_query(call.id, "Неизвестная команда")
+    # === НЕИЗВЕСТНАЯ КНОПКА ===
+    bot.answer_callback_query(callback_query_id=call.id, text="Неизвестная команда")
 
 def handle_winner_year(message):
-    # Если пользователь ввел "назад" или "меню" — возвращаем в главное меню
+    # Если пользователь ввел "назад" или "меню"
     if message.text.lower() in ["назад", "меню", "/start"]:
         start(message)
         bot.clear_step_handler(message)
         return
-    
+
     try:
         year = int(message.text.strip())
     except ValueError:
         bot.send_message(
-            message.chat.id,
-            "❌ Это не похоже на год. Попробуй ещё раз.",
+            chat_id=message.chat.id,
+            text="❌ Это не похоже на год. Попробуй ещё раз.",
             reply_markup=back_to_menu()
         )
         bot.clear_step_handler(message)
@@ -288,11 +287,9 @@ def handle_winner_year(message):
     for entry in winners:
         if entry.get("year") == year:
             driver = entry.get("driver", "Неизвестно")
-            text = f"🏆 **Indy 500 {year}**\n"
-            text += f"🏁 Победитель: {driver}"
             bot.send_message(
-                message.chat.id,
-                text,
+                chat_id=message.chat.id,
+                text=f"🏆 **Indy 500 {year}**\n🏁 Победитель: {driver}",
                 reply_markup=back_to_menu(),
                 parse_mode="Markdown"
             )
@@ -300,8 +297,8 @@ def handle_winner_year(message):
             return
 
     bot.send_message(
-        message.chat.id,
-        f"❌ Нет данных о победителе за {year} год.",
+        chat_id=message.chat.id,
+        text=f"❌ Нет данных о победителе за {year} год.",
         reply_markup=back_to_menu()
     )
     bot.clear_step_handler(message)
