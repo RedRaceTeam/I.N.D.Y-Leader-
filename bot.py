@@ -6,7 +6,7 @@ import uvicorn
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 from fastapi import FastAPI, Request, Response
 from data.winners import winners
-from data.drivers import DRIVERS  # <-- данные вынесены
+from data.drivers import DRIVERS
 
 TOKEN = os.getenv("BOT_TOKEN")
 if not TOKEN:
@@ -61,6 +61,7 @@ def start(message):
 
 @bot.callback_query_handler(func=lambda call: True)
 def handle_callback(call):
+    # Обработка кнопки "Назад в меню"
     if call.data == "menu":
         bot.edit_message_text(
             "🏁 **I.N.D.Y Leader**\n\nГлавное меню. Что хочешь узнать?",
@@ -69,8 +70,10 @@ def handle_callback(call):
             reply_markup=main_menu(),
             parse_mode="Markdown"
         )
+        bot.answer_callback_query(call.id)
         return
 
+    # Топ-5 и календарь
     if call.data == "indycar":
         bot.edit_message_text(
             "🏁 Собираю данные IndyCar...",
@@ -116,8 +119,10 @@ def handle_callback(call):
                 call.message.message_id,
                 reply_markup=back_to_menu()
             )
+        bot.answer_callback_query(call.id)
         return
 
+    # Список гонщиков
     if call.data == "info_list":
         bot.edit_message_text(
             "Выбери гонщика:",
@@ -125,14 +130,17 @@ def handle_callback(call):
             call.message.message_id,
             reply_markup=drivers_list_keyboard()
         )
+        bot.answer_callback_query(call.id)
         return
 
+    # Информация о гонщике
     if call.data.startswith("driver_"):
         code = call.data.replace("driver_", "")
         d = DRIVERS.get(code)
         if not d:
             bot.answer_callback_query(call.id, "Гонщик не найден")
             return
+        
         text = f"🏎️ **{d['name']}**\n"
         text += f"🏁 Команда: {d['team']}\n"
         text += f"🔢 Номер: {d['number']}\n"
@@ -164,8 +172,10 @@ def handle_callback(call):
                 reply_markup=back_to_menu(),
                 parse_mode="Markdown"
             )
+        bot.answer_callback_query(call.id)
         return
 
+    # Запрос года для Indy 500
     if call.data == "winner_prompt":
         bot.edit_message_text(
             "📅 **Введи год** (например, 2023):\n\n"
@@ -175,8 +185,10 @@ def handle_callback(call):
             reply_markup=back_to_menu()
         )
         bot.register_next_step_handler(call.message, handle_winner_year)
+        bot.answer_callback_query(call.id)
         return
 
+    # Случайный пилот
     if call.data == "random_driver":
         code, d = random.choice(list(DRIVERS.items()))
         text = f"🎲 **Тебе выпал:**\n\n"
@@ -210,8 +222,10 @@ def handle_callback(call):
                 reply_markup=back_to_menu(),
                 parse_mode="Markdown"
             )
+        bot.answer_callback_query(call.id)
         return
 
+    # Донат
     if call.data == "donate":
         bot.edit_message_text(
             "❤️ **Поддержать проект**\n\n"
@@ -224,8 +238,10 @@ def handle_callback(call):
             parse_mode="Markdown",
             disable_web_page_preview=True
         )
+        bot.answer_callback_query(call.id)
         return
 
+    # О проекте
     if call.data == "about":
         bot.edit_message_text(
             "📘 **О проекте I.N.D.Y Leader**\n\n"
@@ -242,9 +258,11 @@ def handle_callback(call):
             parse_mode="Markdown",
             disable_web_page_preview=True
         )
+        bot.answer_callback_query(call.id)
         return
 
-    bot.answer_callback_query(call.id)
+    # Если ничего не подошло
+    bot.answer_callback_query(call.id, "Неизвестная команда")
 
 def handle_winner_year(message):
     try:
