@@ -61,6 +61,9 @@ def start(message):
 
 @bot.callback_query_handler(func=lambda call: True)
 def handle_callback(call):
+    # Сбрасываем все ожидания
+    bot.clear_step_handler(call.message)
+    
     # Назад в меню
     if call.data == "menu":
         bot.edit_message_text(
@@ -114,10 +117,10 @@ def handle_callback(call):
             )
         except Exception as e:
             bot.edit_message_text(
-                f"⚠️ Ошибка: {e}",
+                "⚠️ Ошибка при загрузке данных. Возврат в меню.",
                 call.message.chat.id,
                 call.message.message_id,
-                reply_markup=back_to_menu()
+                reply_markup=main_menu()
             )
         bot.answer_callback_query(call.id)
         return
@@ -133,7 +136,7 @@ def handle_callback(call):
         bot.answer_callback_query(call.id)
         return
 
-    # Инфа о гонщике (ИСПРАВЛЕНО)
+    # Инфа о гонщике
     if call.data.startswith("driver_"):
         code = call.data.replace("driver_", "")
         d = DRIVERS.get(code)
@@ -146,7 +149,6 @@ def handle_callback(call):
         text += f"🔢 Номер: {d['number']}\n"
         text += f"📊 Позиция в чемпионате: {d.get('pos', '—')}"
         
-        # Отправляем фото или текст
         if d.get('image'):
             try:
                 bot.send_photo(
@@ -156,7 +158,6 @@ def handle_callback(call):
                     reply_markup=back_to_menu(),
                     parse_mode="Markdown"
                 )
-                # Удаляем сообщение с выбором гонщика
                 bot.delete_message(call.message.chat.id, call.message.message_id)
             except Exception:
                 bot.edit_message_text(
@@ -190,7 +191,7 @@ def handle_callback(call):
         bot.answer_callback_query(call.id)
         return
 
-    # Случайный пилот (ИСПРАВЛЕНО)
+    # Случайный пилот
     if call.data == "random_driver":
         code, d = random.choice(list(DRIVERS.items()))
         text = f"🎲 **Тебе выпал:**\n\n"
@@ -270,6 +271,7 @@ def handle_winner_year(message):
     # Если пользователь ввел "назад" или "меню" — возвращаем в главное меню
     if message.text.lower() in ["назад", "меню", "/start"]:
         start(message)
+        bot.clear_step_handler(message)
         return
     
     try:
@@ -280,6 +282,7 @@ def handle_winner_year(message):
             "❌ Это не похоже на год. Попробуй ещё раз.",
             reply_markup=back_to_menu()
         )
+        bot.clear_step_handler(message)
         return
 
     for entry in winners:
@@ -293,6 +296,7 @@ def handle_winner_year(message):
                 reply_markup=back_to_menu(),
                 parse_mode="Markdown"
             )
+            bot.clear_step_handler(message)
             return
 
     bot.send_message(
@@ -300,6 +304,7 @@ def handle_winner_year(message):
         f"❌ Нет данных о победителе за {year} год.",
         reply_markup=back_to_menu()
     )
+    bot.clear_step_handler(message)
 
 # ===== ВЕБХУК =====
 @app.post("/webhook")
