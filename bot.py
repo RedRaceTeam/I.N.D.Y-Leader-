@@ -75,29 +75,57 @@ def handle_callback(call):
     except Exception as e:
         logger.error(f"Clear step handler error: {e}")
 
-    # === НАЗАД ===
+    # === НАЗАД (исправлено) ===
     if call.data == "menu":
         try:
-            bot.edit_message_text(
-                "🏁 **Главное меню**",
+            if call.message.text:
+                bot.edit_message_text(
+                    "🏁 **Главное меню**",
+                    call.message.chat.id,
+                    call.message.message_id,
+                    reply_markup=main_menu(),
+                    parse_mode="Markdown"
+                )
+            else:
+                bot.delete_message(call.message.chat.id, call.message.message_id)
+                bot.send_message(
+                    call.message.chat.id,
+                    "🏁 **Главное меню**",
+                    reply_markup=main_menu(),
+                    parse_mode="Markdown"
+                )
+        except Exception as e:
+            logger.error(f"Menu edit error: {e}")
+            try:
+                bot.delete_message(call.message.chat.id, call.message.message_id)
+            except:
+                pass
+            bot.send_message(
                 call.message.chat.id,
-                call.message.message_id,
+                "🏁 **Главное меню**",
                 reply_markup=main_menu(),
                 parse_mode="Markdown"
             )
-        except Exception as e:
-            logger.error(f"Menu edit error: {e}")
         bot.answer_callback_query(call.id)
         return
 
-    # === ТОП-5 И КАЛЕНДАРЬ (ESPN) ===
+    # === ТОП-5 И КАЛЕНДАРЬ ===
     if call.data == "indycar":
         try:
-            bot.edit_message_text(
-                "⏳ Загрузка данных...",
-                call.message.chat.id,
-                call.message.message_id
-            )
+            if call.message.text:
+                bot.edit_message_text(
+                    "⏳ Загрузка данных...",
+                    call.message.chat.id,
+                    call.message.message_id
+                )
+            else:
+                bot.delete_message(call.message.chat.id, call.message.message_id)
+                msg = bot.send_message(
+                    call.message.chat.id,
+                    "⏳ Загрузка данных..."
+                )
+                # Сохраняем новое сообщение для редактирования
+                call.message.message_id = msg.message_id
         except Exception as e:
             logger.error(f"Loading edit error: {e}")
         
@@ -154,19 +182,35 @@ def handle_callback(call):
     if call.data == "info_list":
         try:
             if not DRIVERS:
-                bot.edit_message_text(
-                    "⚠️ Нет данных о гонщиках",
-                    call.message.chat.id,
-                    call.message.message_id,
-                    reply_markup=back_to_menu()
-                )
+                if call.message.text:
+                    bot.edit_message_text(
+                        "⚠️ Нет данных о гонщиках",
+                        call.message.chat.id,
+                        call.message.message_id,
+                        reply_markup=back_to_menu()
+                    )
+                else:
+                    bot.delete_message(call.message.chat.id, call.message.message_id)
+                    bot.send_message(
+                        call.message.chat.id,
+                        "⚠️ Нет данных о гонщиках",
+                        reply_markup=back_to_menu()
+                    )
             else:
-                bot.edit_message_text(
-                    "Выбери гонщика:",
-                    call.message.chat.id,
-                    call.message.message_id,
-                    reply_markup=drivers_list()
-                )
+                if call.message.text:
+                    bot.edit_message_text(
+                        "Выбери гонщика:",
+                        call.message.chat.id,
+                        call.message.message_id,
+                        reply_markup=drivers_list()
+                    )
+                else:
+                    bot.delete_message(call.message.chat.id, call.message.message_id)
+                    bot.send_message(
+                        call.message.chat.id,
+                        "Выбери гонщика:",
+                        reply_markup=drivers_list()
+                    )
         except Exception as e:
             logger.error(f"Info list edit error: {e}")
         bot.answer_callback_query(call.id)
@@ -182,6 +226,11 @@ def handle_callback(call):
         
         text = f"🏎️ **{d['name']}**\n🏁 {d['team']}\n🔢 #{d['number']}\n📊 {d.get('pos', '—')}"
         
+        try:
+            bot.delete_message(call.message.chat.id, call.message.message_id)
+        except Exception as e:
+            logger.error(f"Delete message error: {e}")
+        
         if d.get('image'):
             try:
                 bot.send_photo(
@@ -191,38 +240,21 @@ def handle_callback(call):
                     reply_markup=back_to_menu(),
                     parse_mode="Markdown"
                 )
-                try:
-                    bot.edit_message_text(
-                        "✅ Информация отправлена",
-                        call.message.chat.id,
-                        call.message.message_id,
-                        reply_markup=None
-                    )
-                except Exception as e:
-                    logger.error(f"Edit after photo error: {e}")
             except Exception as e:
                 logger.error(f"Send photo error: {e}")
-                try:
-                    bot.edit_message_text(
-                        text,
-                        call.message.chat.id,
-                        call.message.message_id,
-                        reply_markup=back_to_menu(),
-                        parse_mode="Markdown"
-                    )
-                except Exception as e2:
-                    logger.error(f"Fallback edit error: {e2}")
-        else:
-            try:
-                bot.edit_message_text(
-                    text,
+                bot.send_message(
                     call.message.chat.id,
-                    call.message.message_id,
+                    text,
                     reply_markup=back_to_menu(),
                     parse_mode="Markdown"
                 )
-            except Exception as e:
-                logger.error(f"Driver info edit error: {e}")
+        else:
+            bot.send_message(
+                call.message.chat.id,
+                text,
+                reply_markup=back_to_menu(),
+                parse_mode="Markdown"
+            )
         
         bot.answer_callback_query(call.id)
         return
@@ -230,12 +262,20 @@ def handle_callback(call):
     # === ЗАПРОС ГОДА ===
     if call.data == "winner_prompt":
         try:
-            bot.edit_message_text(
-                "📅 **Введи год** (например, 2023):",
-                call.message.chat.id,
-                call.message.message_id,
-                reply_markup=back_to_menu()
-            )
+            if call.message.text:
+                bot.edit_message_text(
+                    "📅 **Введи год** (например, 2023):",
+                    call.message.chat.id,
+                    call.message.message_id,
+                    reply_markup=back_to_menu()
+                )
+            else:
+                bot.delete_message(call.message.chat.id, call.message.message_id)
+                bot.send_message(
+                    call.message.chat.id,
+                    "📅 **Введи год** (например, 2023):",
+                    reply_markup=back_to_menu()
+                )
             bot.register_next_step_handler(call.message, handle_winner_year)
         except Exception as e:
             logger.error(f"Winner prompt edit error: {e}")
@@ -245,20 +285,21 @@ def handle_callback(call):
     # === СЛУЧАЙНЫЙ ПИЛОТ ===
     if call.data == "random_driver":
         if not DRIVERS:
-            try:
-                bot.edit_message_text(
-                    "⚠️ Нет данных о гонщиках",
-                    call.message.chat.id,
-                    call.message.message_id,
-                    reply_markup=back_to_menu()
-                )
-            except Exception as e:
-                logger.error(f"Empty drivers edit error: {e}")
+            bot.send_message(
+                call.message.chat.id,
+                "⚠️ Нет данных о гонщиках",
+                reply_markup=back_to_menu()
+            )
             bot.answer_callback_query(call.id)
             return
             
         code, d = random.choice(list(DRIVERS.items()))
         text = f"🎲 **{d['name']}**\n🏁 {d['team']}\n🔢 #{d['number']}"
+        
+        try:
+            bot.delete_message(call.message.chat.id, call.message.message_id)
+        except Exception as e:
+            logger.error(f"Delete message error: {e}")
         
         if d.get('image'):
             try:
@@ -269,38 +310,21 @@ def handle_callback(call):
                     reply_markup=back_to_menu(),
                     parse_mode="Markdown"
                 )
-                try:
-                    bot.edit_message_text(
-                        "✅ Случайный пилот выбран",
-                        call.message.chat.id,
-                        call.message.message_id,
-                        reply_markup=None
-                    )
-                except Exception as e:
-                    logger.error(f"Edit after random photo error: {e}")
             except Exception as e:
                 logger.error(f"Random photo error: {e}")
-                try:
-                    bot.edit_message_text(
-                        text,
-                        call.message.chat.id,
-                        call.message.message_id,
-                        reply_markup=back_to_menu(),
-                        parse_mode="Markdown"
-                    )
-                except Exception as e2:
-                    logger.error(f"Random fallback error: {e2}")
-        else:
-            try:
-                bot.edit_message_text(
-                    text,
+                bot.send_message(
                     call.message.chat.id,
-                    call.message.message_id,
+                    text,
                     reply_markup=back_to_menu(),
                     parse_mode="Markdown"
                 )
-            except Exception as e:
-                logger.error(f"Random no photo edit error: {e}")
+        else:
+            bot.send_message(
+                call.message.chat.id,
+                text,
+                reply_markup=back_to_menu(),
+                parse_mode="Markdown"
+            )
         
         bot.answer_callback_query(call.id)
         return
@@ -308,15 +332,26 @@ def handle_callback(call):
     # === ДОНАТ ===
     if call.data == "donate":
         try:
-            bot.edit_message_text(
-                "❤️ **Поддержать проект**\n\n"
-                "💰 DonationAlerts: [тык сюда](https://www.donationalerts.com/r/kimi_redrace)",
-                call.message.chat.id,
-                call.message.message_id,
-                reply_markup=back_to_menu(),
-                parse_mode="Markdown",
-                disable_web_page_preview=True
-            )
+            if call.message.text:
+                bot.edit_message_text(
+                    "❤️ **Поддержать проект**\n\n"
+                    "💰 DonationAlerts: [тык сюда](https://www.donationalerts.com/r/kimi_redrace)",
+                    call.message.chat.id,
+                    call.message.message_id,
+                    reply_markup=back_to_menu(),
+                    parse_mode="Markdown",
+                    disable_web_page_preview=True
+                )
+            else:
+                bot.delete_message(call.message.chat.id, call.message.message_id)
+                bot.send_message(
+                    call.message.chat.id,
+                    "❤️ **Поддержать проект**\n\n"
+                    "💰 DonationAlerts: [тык сюда](https://www.donationalerts.com/r/kimi_redrace)",
+                    reply_markup=back_to_menu(),
+                    parse_mode="Markdown",
+                    disable_web_page_preview=True
+                )
         except Exception as e:
             logger.error(f"Donate edit error: {e}")
         bot.answer_callback_query(call.id)
@@ -325,18 +360,32 @@ def handle_callback(call):
     # === О ПРОЕКТЕ ===
     if call.data == "about":
         try:
-            bot.edit_message_text(
-                "📘 **О проекте**\n\n"
-                "Неофициальный бот для фанатов IndyCar.\n"
-                "Не связан с IndyCar Series, LLC.\n\n"
-                "🔗 [GitHub](https://github.com/RedRaceTeam/I.N.D.Y-Leader)\n"
-                "🧑‍💻 @RedRaceF1, @Gabriella1488",
-                call.message.chat.id,
-                call.message.message_id,
-                reply_markup=back_to_menu(),
-                parse_mode="Markdown",
-                disable_web_page_preview=True
-            )
+            if call.message.text:
+                bot.edit_message_text(
+                    "📘 **О проекте**\n\n"
+                    "Неофициальный бот для фанатов IndyCar.\n"
+                    "Не связан с IndyCar Series, LLC.\n\n"
+                    "🔗 [GitHub](https://github.com/RedRaceTeam/I.N.D.Y-Leader)\n"
+                    "🧑‍💻 @RedRaceF1, @Gabriella1488",
+                    call.message.chat.id,
+                    call.message.message_id,
+                    reply_markup=back_to_menu(),
+                    parse_mode="Markdown",
+                    disable_web_page_preview=True
+                )
+            else:
+                bot.delete_message(call.message.chat.id, call.message.message_id)
+                bot.send_message(
+                    call.message.chat.id,
+                    "📘 **О проекте**\n\n"
+                    "Неофициальный бот для фанатов IndyCar.\n"
+                    "Не связан с IndyCar Series, LLC.\n\n"
+                    "🔗 [GitHub](https://github.com/RedRaceTeam/I.N.D.Y-Leader)\n"
+                    "🧑‍💻 @RedRaceF1, @Gabriella1488",
+                    reply_markup=back_to_menu(),
+                    parse_mode="Markdown",
+                    disable_web_page_preview=True
+                )
         except Exception as e:
             logger.error(f"About edit error: {e}")
         bot.answer_callback_query(call.id)
