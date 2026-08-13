@@ -61,7 +61,7 @@ def start(message):
 
 @bot.callback_query_handler(func=lambda call: True)
 def handle_callback(call):
-    # Обработка кнопки "Назад в меню"
+    # Назад в меню
     if call.data == "menu":
         bot.edit_message_text(
             "🏁 **I.N.D.Y Leader**\n\nГлавное меню. Что хочешь узнать?",
@@ -133,7 +133,7 @@ def handle_callback(call):
         bot.answer_callback_query(call.id)
         return
 
-    # Информация о гонщике
+    # Инфа о гонщике (ИСПРАВЛЕНО)
     if call.data.startswith("driver_"):
         code = call.data.replace("driver_", "")
         d = DRIVERS.get(code)
@@ -146,6 +146,7 @@ def handle_callback(call):
         text += f"🔢 Номер: {d['number']}\n"
         text += f"📊 Позиция в чемпионате: {d.get('pos', '—')}"
         
+        # Отправляем фото или текст
         if d.get('image'):
             try:
                 bot.send_photo(
@@ -155,6 +156,7 @@ def handle_callback(call):
                     reply_markup=back_to_menu(),
                     parse_mode="Markdown"
                 )
+                # Удаляем сообщение с выбором гонщика
                 bot.delete_message(call.message.chat.id, call.message.message_id)
             except Exception:
                 bot.edit_message_text(
@@ -188,7 +190,7 @@ def handle_callback(call):
         bot.answer_callback_query(call.id)
         return
 
-    # Случайный пилот
+    # Случайный пилот (ИСПРАВЛЕНО)
     if call.data == "random_driver":
         code, d = random.choice(list(DRIVERS.items()))
         text = f"🎲 **Тебе выпал:**\n\n"
@@ -265,6 +267,11 @@ def handle_callback(call):
     bot.answer_callback_query(call.id, "Неизвестная команда")
 
 def handle_winner_year(message):
+    # Если пользователь ввел "назад" или "меню" — возвращаем в главное меню
+    if message.text.lower() in ["назад", "меню", "/start"]:
+        start(message)
+        return
+    
     try:
         year = int(message.text.strip())
     except ValueError:
