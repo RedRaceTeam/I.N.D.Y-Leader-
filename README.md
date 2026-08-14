@@ -1,16 +1,104 @@
-# 🏁 Turbo Train — I.N.D.Y Leader
+# 🏁 I.N.D.Y Leader — Your IndyCar Assistant
 
-**Turbo Train** is a Telegram bot for IndyCar fans.  
-Fast access to driver info, championship standings, calendar, and Indy 500 winners.  
-Built for fans who want to know everything about their favorite drivers.
+[![Try the Bot](https://img.shields.io/badge/🤖_Try_Bot-2CA5E0?style=for-the-badge&logo=telegram&logoColor=white)](https://t.me/Opandksksk_bot)
+[![Source Code](https://img.shields.io/badge/📂_Source_Code-181717?style=for-the-badge&logo=github&logoColor=white)](https://github.com/RedRaceTeam/I.N.D.Y-Leader)
+[![Donate](https://img.shields.io/badge/❤️_Donate-ff69b4?style=for-the-badge&logo=heart&logoColor=white)](https://www.donationalerts.com/r/kimi_redrace)
+[![P4/9](https://img.shields.io/badge/P4/9-26A5E4?style=for-the-badge&logo=telegram&logoColor=white)](https://t.me/P4Devl)
+[![Gabriella](https://img.shields.io/badge/Gabriella_Projects-26A5E4?style=for-the-badge&logo=telegram&logoColor=white)](https://t.me/GabriellaProjekts)
+
+---
+
+**I.N.D.Y Leader** is a Telegram bot for IndyCar fans.  
+Fast access to driver info, standings, calendar, winners, and AI-powered answers.
+
+---
+
+## ⚡️ Features
+
+| Command / Button | Description |
+|------------------|-------------|
+| 🏁 **Top 5 & Calendar** | Live championship standings and upcoming races |
+| 🏎️ **Driver Info** | Team, number, position, and official photo |
+| 🏆 **Indy 500 Winners** | Full history from 1911 to 2026 |
+| 🎲 **Random Driver** | Get a random driver to root for |
+| 🧠 **Ask Nico** | AI expert on IndyCar (powered by Groq) |
+| 🎯 **Admin Panel** | Stats, users, and command analytics |
+
+---
+
+## 🛠️ Tech Stack
+
+| Component | Technology |
+|-----------|------------|
+| Language | Python 3.11+ |
+| Bot Framework | pyTelegramBotAPI |
+| Web Server | FastAPI + Uvicorn |
+| AI | Gemini (Gemini 3,6 ) |
+| Database | SQLite (users, stats, history) |
+| RAG | LangChain + FAISS |
+| Deployment | Render |
+| Webhook | Telegram Bot API |
+
+---
+
+## 📁 Project Structure
+
+```
+
+I.N.D.Y-Leader/
+├── bot.py              # Main bot logic (FastAPI + Webhook)
+├── data/
+│   ├── drivers.py      # 33 drivers with photos
+│   ├── winners.py      # Indy 500 winners (1911–2026)
+│   └── knowledge.txt   # Base knowledge for Nico AI
+├── requirements.txt
+├── Dockerfile
+├── README.md
+└── .env
+
+```
+
+---
+
+## 📌 Links
+
+| Link | URL |
+|------|-----|
+| 🤖 **Try Bot** | [t.me/Opandksksk_bot](https://t.me/Opandksksk_bot) |
+| 📂 **GitHub** | [github.com/RedRaceTeam/I.N.D.Y-Leader](https://github.com/RedRaceTeam/I.N.D.Y-Leader) |
+| ❤️ **Donate** | [donationalerts.com/r/kimi_redrace](https://www.donationalerts.com/r/kimi_redrace) |
+| 📱 **P4/9 Channel** | [t.me/P4Devl](https://t.me/P4Devl) |
+| 📱 **Gabriella Projects** | [t.me/GabriellaProjekts](https://t.me/GabriellaProjekts) |
+
+---
+
+## 🤖 AI — Nico
+
+**Nico** is an AI expert on IndyCar, powered by **Gemini (Gemini 3,6)**.
+
+It works as a **RAG (Retrieval-Augmented Generation)** system:
+1. Searches for relevant info in the knowledge base.
+2. Uses context from previous messages (last 50).
+3. Generates accurate, human-like responses.
+
+---
+
+## 👑 Admin Panel
+
+Only accessible to authorized admins via `/admin`.
+
+Features:
+- 📊 **Stats** — total users and commands.
+- 👥 **Users** — last 20 active users.
+- 📈 **Commands** — most used commands.
 
 ---
 
 ## 🚀 Quick Start
 
-### 1. Run locally
+### 1. Run Locally
 
-```bash
+
 # Clone the repo
 git clone https://github.com/RedRaceTeam/I.N.D.Y-Leader.git
 cd I.N.D.Y-Leader
@@ -18,157 +106,43 @@ cd I.N.D.Y-Leader
 # Install dependencies
 pip install -r requirements.txt
 
-# Create .env with your bot token
+# Create .env file
 echo "BOT_TOKEN=your_token_from_BotFather" > .env
+echo "GROQ_API_KEY=your_groq_api_key" >> .env
 
-# Run the bot (uses polling for local testing)
+# Run (polling mode for local testing)
 python bot.py
-```
 
-For production on Render, the bot uses Webhook (FastAPI + uvicorn).
-Environment variables must be set in the Render dashboard.
 
----
+2. Deploy on Render
 
-📋 Bot Commands
-
-Command Description
-/start Welcome message
-/help List of all commands
-/indycar Top 5 drivers + upcoming races
-/info <code> Driver info by IDC code (e.g. /info PAL)
-/drivers List of all available IDC codes
-/winner <year> Indy 500 winner for a specific year
-/indy500 <year> Same as /winner
-/youinindy Random driver from the championship
-
----
-
-📁 Project Structure
-
-```
-I.N.D.Y-Leader/
-├── bot.py              # Main logic (FastAPI + Webhook)
-├── data/
-│   └── winners.py      # Full Indy 500 winners list (1911–2026)
-├── requirements.txt    # Dependencies
-├── README.md           # This file
-└── .env                # Environment variables (not in repo)
-```
-
----
-
-🛠️ Tech Stack
-
-· Python 3.11+
-· pyTelegramBotAPI — Telegram Bot API wrapper
-· FastAPI + uvicorn — Web server for Webhook (production)
-· requests — HTTP requests to ESPN API
-· python-dotenv — Environment variables
-
----
-
-📦 Dependencies
-
-```
-pyTelegramBotAPI==4.15.2
-requests==2.31.0
-fastapi==0.109.0
-uvicorn[standard]==0.27.0
-python-dotenv==1.0.0
-```
-
----
-
-🧠 How It Works
-
-Driver Data
-
-Driver info is stored in the DRIVERS dictionary inside bot.py.
-Each driver has a unique 3-letter IDC code.
-
-```python
-DRIVERS = {
-    "PAL": {"name": "Alex Palou", "team": "Chip Ganassi Racing", "number": 10, "pos": 1},
-    # ...
-}
-```
-
-Indy 500 Winners
-
-Winner data from 1911 to 2026 is stored in data/winners.py as a list of dictionaries.
-
-```python
-winners = [
-    {"year": 2020, "driver": "Takuma Sato"},
-    # ...
-]
-```
-
-Webhook (Production)
-
-Instead of bot.polling(), the bot uses FastAPI + Webhook.
-Telegram sends updates to the /webhook endpoint.
-
-```python
-@app.post("/webhook")
-async def webhook(request: Request):
-    data = await request.json()
-    update = telebot.types.Update.de_json(data)
-    bot.process_new_updates([update])
-    return Response(content="OK", status_code=200)
-```
-
----
-
-🚀 Deploy on Render
-
-1. Push your code to GitHub.
-2. In Render, create a Web Service and connect your repo.
+1. Push code to GitHub.
+2. Create a Web Service on Render.
 3. Set environment variables:
-   · BOT_TOKEN — your bot token
-   · WEBHOOK_URL — https://your-service.onrender.com/webhook
-   · PORT — 8000 (Render sets it automatically)
-4. Render will install dependencies from requirements.txt and start the bot.
+   · BOT_TOKEN
+   · GROQ_API_KEY
+   · WEBHOOK_URL (your Render URL)
+4. Deploy and enjoy.
 
 ---
 
-🤝 How to Contribute
+🧑‍💻 Authors
 
-1. Fork the repo.
-2. Create a branch (git checkout -b feature/amazing-thing).
-3. Commit your changes (git commit -m 'Add amazing thing').
-4. Push to the branch (git push origin feature/amazing-thing).
-5. Open a Pull Request to main.
+Name Role Contact
+Gabriella88 Idea, project lead, data, testing @Gabriella1488
+P4/9 (Kimi) Development, architecture, AI, webhook @Scanialove
 
 ---
 
-📌 Roadmap
+❤️ Support the Project
 
-☑ /winner and /indy500 commands with full Indy 500 history
-☑ Webhook for stable operation on Render
-☐ Connect to OpenF1 API for real-time data
-☐ Auto-update championship standings
-☐ /race — next race info
-☐ Database for user settings
+If you like I.N.D.Y Leader, you can support its development:
+
+https://img.shields.io/badge/Donate_on_DonationAlerts-ff69b4?style=for-the-badge&logo=heart&logoColor=white
 
 ---
 
 📄 License
 
-MIT © P4/9
-
----
-
-🙌 Authors
-
-· Gabriella88 — idea, project lead, Indy 500 winners data, testing
-· P4/9 (Kimi) — development, architecture, webhook implementating
-
-## 💖 Support the Project
-
-If you like Turbo Train and want to support its development:
-
-[![Donate on DonationAlerts](https://img.shields.io/badge/Donate-DonationAlerts-ff69b4?style=for-the-badge&logo=heart)](https://www.donationalerts.com/r/kimi_redrace)
-
-Every donation helps keep the bot running and motivates us to add new features. 🏁
+This project is licensed under the MIT License.
+ 
