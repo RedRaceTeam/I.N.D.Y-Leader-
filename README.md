@@ -128,8 +128,9 @@ python bot.py
 
 🧑‍💻 Authors
 
-Name Role Contact
+
 Gabriella88 Idea, project lead, data, testing @Gabriella1488
+
 P4/9 (Kimi) Development, architecture, AI, webhook @Scanialove
 
 ---
