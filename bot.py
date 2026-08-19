@@ -7,20 +7,25 @@ import logging
 import sqlite3
 import re
 import time
+import threading
+import asyncio
 from datetime import datetime, timezone
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton, InputMediaPhoto
 from fastapi import FastAPI, Request, Response
-from data.winners import winners
-from data.drivers import DRIVERS
 
-# ===== НАСТРОЙКА ЛОГГИРОВАНИЯ =====
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+# Импорты из модулей
+from data.drivers import DRIVERS
+from data.winners import winners
+from admin_tools import (
+    get_all_users, get_active_users, get_user_stats, get_global_stats,
+    send_broadcast, update_knowledge_base, start_auto_update,
+    create_ticket, get_open_tickets, close_ticket
 )
+
+# ===== НАСТРОЙКА =====
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-# ===== ПЕРЕМЕННЫЕ ОКРУЖЕНИЯ =====
 TOKEN = os.getenv("BOT_TOKEN")
 if not TOKEN:
     raise ValueError("BOT_TOKEN не найден")
@@ -28,23 +33,15 @@ if not TOKEN:
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 WEBHOOK_URL = os.getenv("WEBHOOK_URL", "https://turbo-train-2b9d.onrender.com/webhook")
 
-# ===== АДМИНЫ ИЗ ПЕРЕМЕННОЙ ОКРУЖЕНИЯ =====
-ADMIN_IDS = []
-if os.getenv("ADMIN_IDS"):
-    try:
-        ADMIN_IDS = [int(x.strip()) for x in os.getenv("ADMIN_IDS").split(',')]
-        print(f"✅ Загружено {len(ADMIN_IDS)} админов")
-    except:
-        ADMIN_IDS = []
-        print("⚠️ Ошибка парсинга ADMIN_IDS, админ-панель недоступна")
-else:
-    print("⚠️ ADMIN_IDS не задан, админ-панель недоступна")
+# ===== АДМИНЫ ХАРДКОД =====
+ADMIN_IDS = [7025868617, 7946032603]
+print(f"✅ Загружено {len(ADMIN_IDS)} админов")
 
-# ===== ИНИЦИАЛИЗАЦИЯ БОТА =====
+# ===== ИНИЦИАЛИЗАЦИЯ =====
 bot = telebot.TeleBot(TOKEN)
 app = FastAPI()
 
-# ===== БАЗА ДАННЫХ =====
+# ===== БД (инициализация с таблицей для заявок) =====
 def init_db():
     conn = sqlite3.connect('indyleader.db', check_same_thread=False)
     c = conn.cursor()
@@ -79,13 +76,24 @@ def init_db():
         )
     ''')
     
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS tickets (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER,
+            issue TEXT,
+            contact TEXT,
+            status TEXT DEFAULT 'open',
+            created_at TEXT
+        )
+    ''')
+    
     c.execute('PRAGMA journal_mode=WAL')
     conn.commit()
     conn.close()
 
 init_db()
 
-# ===== ФУНКЦИИ РАБОТЫ С БД =====
+# ===== БАЗОВЫЕ ФУНКЦИИ =====
 def log_user(user):
     conn = sqlite3.connect('indyleader.db')
     c = conn.cursor()
@@ -114,22 +122,6 @@ def log_command(user_id, command):
     conn.commit()
     conn.close()
 
-def get_stats():
-    conn = sqlite3.connect('indyleader.db')
-    c = conn.cursor()
-    c.execute('SELECT COUNT(*) FROM users')
-    total_users = c.fetchone()[0]
-    c.execute('SELECT COUNT(*) FROM stats')
-    total_commands = c.fetchone()[0]
-    c.execute('''
-        SELECT username, total_commands, last_seen
-        FROM users ORDER BY total_commands DESC LIMIT 10
-    ''')
-    top_users = c.fetchall()
-    conn.close()
-    return total_users, total_commands, top_users
-
-# ===== ФУНКЦИИ СОСТОЯНИЙ =====
 def set_state(user_id, state, data=None):
     conn = sqlite3.connect('indyleader.db')
     c = conn.cursor()
@@ -155,95 +147,26 @@ def clear_state(user_id):
     conn.commit()
     conn.close()
 
-# ===== ЭКРАНИРОВАНИЕ MARKDOWN =====
 def escape_markdown(text):
     if not text:
         return text
     escape_chars = r'_*[]()~`>#+-=|{}.!'
     return re.sub(f'([{re.escape(escape_chars)}])', r'\\\1', text)
 
-# ===== ФУНКЦИЯ ПОЛУЧЕНИЯ ТОП-5 ИЗ ESPN =====
-def get_top5_from_espn():
-    try:
-        url = "https://site.api.espn.com/apis/site/v2/sports/racing/irl/standings"
-        resp = requests.get(url, timeout=10)
-        resp.raise_for_status()
-        data = resp.json()
-        
-        entries = data.get('standings', [{}])[0].get('entries', [])[:5]
-        top5 = []
-        for entry in entries:
-            athlete = entry.get('athlete', {})
-            name = athlete.get('displayName', 'Неизвестно')
-            points = entry.get('points', 0)
-            top5.append(f"{name} — {points} очков")
-        
-        return top5
-    except Exception as e:
-        logger.error(f"ESPN standings error: {e}")
-        return []
-
-# ===== ФУНКЦИЯ ПЕРЕВОДА НОВОСТЕЙ (через Нико) =====
-def translate_news_to_russian(headline, description):
-    """Переводит новость на русский через Groq"""
-    if not GROQ_API_KEY:
-        return headline, description
-    
-    try:
-        prompt = f"Переведи на русский язык эту новость IndyCar:\nЗаголовок: {headline}\nОписание: {description}\n\nОтвет дай в формате:\nЗаголовок: [перевод]\nОписание: [перевод]"
-        
-        response = requests.post(
-            "https://api.groq.com/openai/v1/chat/completions",
-            headers={
-                "Authorization": f"Bearer {GROQ_API_KEY}",
-                "Content-Type": "application/json"
-            },
-            json={
-                "model": "llama-3.3-70b-versatile",
-                "messages": [
-                    {"role": "system", "content": "Ты переводчик. Переводи новости IndyCar с английского на русский. Сохраняй стиль и терминологию."},
-                    {"role": "user", "content": prompt}
-                ],
-                "temperature": 0.3,
-                "max_tokens": 300
-            },
-            timeout=15
-        )
-        
-        if response.status_code == 200:
-            data = response.json()
-            translated = data["choices"][0]["message"]["content"]
-            
-            # Парсим ответ
-            import re
-            title_match = re.search(r'Заголовок:\s*(.+?)(?:\n|$)', translated)
-            desc_match = re.search(r'Описание:\s*(.+?)(?:\n|$)', translated, re.DOTALL)
-            
-            new_title = title_match.group(1).strip() if title_match else headline
-            new_desc = desc_match.group(1).strip() if desc_match else description
-            
-            return new_title, new_desc
-    except Exception as e:
-        logger.error(f"Translation error: {e}")
-    
-    return headline, description
-
-# ===== AI-ФУНКЦИЯ (НИКО) =====
+# ===== AI (Нико) =====
 def ask_nico(question: str) -> str:
     if not GROQ_API_KEY:
         return "⚠️ Нико не настроен (нет API-ключа)"
 
+    # Сначала ищем в базе знаний
     try:
-        response = requests.post(
-            "https://api.groq.com/openai/v1/chat/completions",
-            headers={
-                "Authorization": f"Bearer {GROQ_API_KEY}",
-                "Content-Type": "application/json"
-            },
-            json={
-                "model": "llama-3.3-70b-versatile",
-                "messages": [
-                    {"role": "system", "content": """
+        with open("data/knowledge.txt", "r", encoding="utf-8") as f:
+            knowledge = f.read()
+    except:
+        knowledge = ""
+    
+    # Формируем промпт с контекстом
+    system_prompt = f"""
 Ты — Нико, живой эксперт по IndyCar.
 Ты фанат гонок, знаешь всё о пилотах, командах, трассах и истории.
 Твоя задача — отвечать на вопросы про IndyCar как человек, а не как робот.
@@ -260,7 +183,22 @@ def ask_nico(question: str) -> str:
 - Победителей Indy 500 с 1911 года
 - Основные трассы календаря
 - Историю серии
-"""},
+
+ВАЖНО: Используй информацию из базы знаний, если она есть:
+{knowledge[:2000]}
+"""
+
+    try:
+        response = requests.post(
+            "https://api.groq.com/openai/v1/chat/completions",
+            headers={
+                "Authorization": f"Bearer {GROQ_API_KEY}",
+                "Content-Type": "application/json"
+            },
+            json={
+                "model": "llama-3.3-70b-versatile",
+                "messages": [
+                    {"role": "system", "content": system_prompt},
                     {"role": "user", "content": question}
                 ],
                 "temperature": 0.7,
@@ -281,30 +219,25 @@ def ask_nico(question: str) -> str:
         logger.error(f"AI error: {e}")
         return f"⚠️ Ошибка: {e}"
 
-# ===== КЛАВИАТУРЫ (без капса) =====
+# ===== КЛАВИАТУРЫ =====
 def main_menu():
     markup = InlineKeyboardMarkup(row_width=2)
-    
     markup.add(
         InlineKeyboardButton("🏁 Календарь и топ", callback_data="schedule_top"),
         InlineKeyboardButton("🏎️ Пилоты", callback_data="drivers_list")
     )
-    
     markup.add(
         InlineKeyboardButton("🏆 Indy 500", callback_data="indy500_menu"),
         InlineKeyboardButton("🎲 Случайный пилот", callback_data="random_driver")
     )
-    
     markup.add(
         InlineKeyboardButton("🧠 Спросить Нико", callback_data="ask_nico"),
         InlineKeyboardButton("📰 Новости", callback_data="news")
     )
-    
     markup.add(
         InlineKeyboardButton("❤️ Поддержать", callback_data="donate"),
         InlineKeyboardButton("ℹ️ О проекте", callback_data="about")
     )
-    
     return markup
 
 def back_to_menu():
@@ -314,7 +247,6 @@ def back_to_menu():
 
 def drivers_list_buttons():
     markup = InlineKeyboardMarkup(row_width=2)
-    
     teams = {}
     for code, d in DRIVERS.items():
         team = d['team']
@@ -324,7 +256,6 @@ def drivers_list_buttons():
     
     for team, drivers in sorted(teams.items()):
         markup.add(InlineKeyboardButton(f"━━ {team} ━━", callback_data="noop"))
-        
         row = []
         for code, d in drivers:
             surname = d['name'].split()[-1]
@@ -351,50 +282,64 @@ def indy500_menu():
     return markup
 
 def admin_panel():
-    markup = InlineKeyboardMarkup(row_width=1)
+    markup = InlineKeyboardMarkup(row_width=2)
     markup.add(
         InlineKeyboardButton("📊 Статистика", callback_data="admin_stats"),
-        InlineKeyboardButton("👥 Пользователи", callback_data="admin_users"),
+        InlineKeyboardButton("👥 Пользователи", callback_data="admin_users")
+    )
+    markup.add(
         InlineKeyboardButton("📈 Команды", callback_data="admin_commands"),
-        InlineKeyboardButton("🔙 Выйти из админки", callback_data="menu")
+        InlineKeyboardButton("👤 Юзер-стат", callback_data="admin_user_stats")
+    )
+    markup.add(
+        InlineKeyboardButton("📨 Рассылка", callback_data="admin_broadcast"),
+        InlineKeyboardButton("🔄 Обновить базу", callback_data="admin_update_db")
+    )
+    markup.add(
+        InlineKeyboardButton("🎫 Заявки в ТП", callback_data="admin_tickets"),
+        InlineKeyboardButton("🔙 Выйти", callback_data="menu")
     )
     return markup
 
-# ===== ОБРАБОТЧИК КОМАНД =====
+# ===== КОМАНДЫ =====
 @bot.message_handler(commands=['start'])
 def start(message):
     log_user(message.from_user)
     log_command(message.from_user.id, 'start')
     clear_state(message.from_user.id)
-    
     bot.send_message(
         message.chat.id,
-        "🏁 **I.N.D.Y Leader**\n\n"
-        "Бот для настоящих фанатов IndyCar.\n"
-        "Выбирай кнопку и погнали!",
+        "🏁 **I.N.D.Y Leader**\n\nБот для настоящих фанатов IndyCar.\nВыбирай кнопку и погнали!",
         reply_markup=main_menu(),
         parse_mode="Markdown"
     )
 
 @bot.message_handler(commands=['admin'])
 def admin_command(message):
-    if not ADMIN_IDS:
-        bot.reply_to(message, "⛔ Админ-панель отключена")
-        return
-    
     if message.from_user.id not in ADMIN_IDS:
         bot.reply_to(message, "⛔ У вас нет доступа")
         return
-    
     log_command(message.from_user.id, 'admin')
     bot.send_message(
         message.chat.id,
-        "🔐 **Админ-панель**",
+        "🔐 **Админ-панель**\n\nВыберите действие:",
         reply_markup=admin_panel(),
         parse_mode="Markdown"
     )
 
-# ===== ОБРАБОТЧИК ВСЕХ ТЕКСТОВЫХ СООБЩЕНИЙ =====
+@bot.message_handler(commands=['ticket'])
+def ticket_command(message):
+    """Команда для создания заявки в ТП"""
+    bot.send_message(
+        message.chat.id,
+        "🎫 **Техническая поддержка**\n\n"
+        "Опиши свою проблему в одном сообщении.\n"
+        "Я передам её админам.\n\n"
+        "Формат: проблема | контакт (например: @username или почта)"
+    )
+    set_state(message.from_user.id, "waiting_ticket")
+
+# ===== ТЕКСТОВЫЕ СООБЩЕНИЯ =====
 @bot.message_handler(func=lambda message: True)
 def handle_text_messages(message):
     user_id = message.from_user.id
@@ -414,6 +359,12 @@ def handle_text_messages(message):
     elif state == "waiting_nico":
         handle_nico_input(message, data)
         clear_state(user_id)
+    elif state == "waiting_ticket":
+        handle_ticket_input(message)
+        clear_state(user_id)
+    elif state == "waiting_broadcast":
+        handle_broadcast_input(message, data)
+        clear_state(user_id)
 
 # ===== ОБРАБОТЧИК КНОПОК =====
 @bot.callback_query_handler(func=lambda call: True)
@@ -424,6 +375,7 @@ def handle_callback(call):
     
     user_id = call.from_user.id
     
+    # === ГЛАВНОЕ МЕНЮ ===
     if call.data == "menu":
         try:
             bot.edit_message_text(
@@ -443,11 +395,13 @@ def handle_callback(call):
         bot.answer_callback_query(call.id)
         return
     
+    # === КАЛЕНДАРЬ ===
     if call.data == "schedule_top":
         log_command(user_id, 'schedule_top')
         show_schedule_and_top(call)
         return
     
+    # === ПИЛОТЫ ===
     if call.data == "drivers_list":
         log_command(user_id, 'drivers_list')
         try:
@@ -471,6 +425,7 @@ def handle_callback(call):
         show_driver_info(call)
         return
     
+    # === INDY 500 ===
     if call.data == "indy500_menu":
         log_command(user_id, 'indy500_menu')
         try:
@@ -501,8 +456,7 @@ def handle_callback(call):
         set_state(user_id, "waiting_year")
         try:
             bot.edit_message_text(
-                "📅 **Введи год** (например, 2023):\n\n"
-                "Или напиши *назад*, чтобы вернуться",
+                "📅 **Введи год** (например, 2023):\n\nИли напиши *назад*, чтобы вернуться",
                 call.message.chat.id,
                 call.message.message_id,
                 reply_markup=None,
@@ -511,18 +465,19 @@ def handle_callback(call):
         except:
             bot.send_message(
                 call.message.chat.id,
-                "📅 **Введи год** (например, 2023):\n\n"
-                "Или напиши *назад*, чтобы вернуться",
+                "📅 **Введи год** (например, 2023):\n\nИли напиши *назад*, чтобы вернуться",
                 parse_mode="Markdown"
             )
         bot.answer_callback_query(call.id)
         return
     
+    # === РАНДОМ ===
     if call.data == "random_driver":
         log_command(user_id, 'random_driver')
         show_random_driver(call)
         return
     
+    # === НИКО ===
     if call.data == "ask_nico":
         log_command(user_id, 'ask_nico')
         set_state(user_id, "waiting_nico")
@@ -541,17 +496,18 @@ def handle_callback(call):
         bot.answer_callback_query(call.id)
         return
     
+    # === НОВОСТИ ===
     if call.data == "news":
         log_command(user_id, 'news')
         show_news(call)
         return
     
+    # === ДОНАТ ===
     if call.data == "donate":
         log_command(user_id, 'donate')
         try:
             bot.edit_message_text(
-                "❤️ **Поддержать проект**\n\n"
-                "💰 [DonationAlerts](https://www.donationalerts.com/r/kimi_redrace)",
+                "❤️ **Поддержать проект**\n\n💰 [DonationAlerts](https://www.donationalerts.com/r/kimi_redrace)",
                 call.message.chat.id,
                 call.message.message_id,
                 reply_markup=back_to_menu(),
@@ -561,8 +517,7 @@ def handle_callback(call):
         except:
             bot.send_message(
                 call.message.chat.id,
-                "❤️ **Поддержать проект**\n\n"
-                "💰 [DonationAlerts](https://www.donationalerts.com/r/kimi_redrace)",
+                "❤️ **Поддержать проект**\n\n💰 [DonationAlerts](https://www.donationalerts.com/r/kimi_redrace)",
                 reply_markup=back_to_menu(),
                 parse_mode="Markdown",
                 disable_web_page_preview=True
@@ -570,15 +525,12 @@ def handle_callback(call):
         bot.answer_callback_query(call.id)
         return
     
+    # === О ПРОЕКТЕ ===
     if call.data == "about":
         log_command(user_id, 'about')
         try:
             bot.edit_message_text(
-                "📘 **О проекте**\n\n"
-                "Неофициальный бот для фанатов IndyCar.\n"
-                "Не связан с IndyCar Series, LLC.\n\n"
-                "🔗 [GitHub](https://github.com/RedRaceTeam/I.N.D.Y-Leader)\n"
-                "🧑‍💻 @RedRaceF1, @Gabriella1488",
+                "📘 **О проекте**\n\nНеофициальный бот для фанатов IndyCar.\nНе связан с IndyCar Series, LLC.\n\n🔗 [GitHub](https://github.com/RedRaceTeam/I.N.D.Y-Leader)\n🧑‍💻 @RedRaceF1, @Gabriella1488",
                 call.message.chat.id,
                 call.message.message_id,
                 reply_markup=back_to_menu(),
@@ -588,11 +540,7 @@ def handle_callback(call):
         except:
             bot.send_message(
                 call.message.chat.id,
-                "📘 **О проекте**\n\n"
-                "Неофициальный бот для фанатов IndyCar.\n"
-                "Не связан с IndyCar Series, LLC.\n\n"
-                "🔗 [GitHub](https://github.com/RedRaceTeam/I.N.D.Y-Leader)\n"
-                "🧑‍💻 @RedRaceF1, @Gabriella1488",
+                "📘 **О проекте**\n\nНеофициальный бот для фанатов IndyCar.\nНе связан с IndyCar Series, LLC.\n\n🔗 [GitHub](https://github.com/RedRaceTeam/I.N.D.Y-Leader)\n🧑‍💻 @RedRaceF1, @Gabriella1488",
                 reply_markup=back_to_menu(),
                 parse_mode="Markdown",
                 disable_web_page_preview=True
@@ -600,10 +548,9 @@ def handle_callback(call):
         bot.answer_callback_query(call.id)
         return
     
-    if call.data in ["admin_stats", "admin_users", "admin_commands"]:
-        if not ADMIN_IDS:
-            bot.answer_callback_query(call.id, "Админ-панель отключена")
-            return
+    # === АДМИН-ПАНЕЛЬ ===
+    if call.data in ["admin_stats", "admin_users", "admin_commands", "admin_user_stats", 
+                     "admin_broadcast", "admin_update_db", "admin_tickets"]:
         if user_id not in ADMIN_IDS:
             bot.answer_callback_query(call.id, "Нет доступа")
             return
@@ -616,16 +563,12 @@ def handle_callback(call):
     
     bot.answer_callback_query(call.id, "Неизвестная команда")
 
-# ===== ОТДЕЛЬНЫЕ ФУНКЦИИ ДЛЯ ОБРАБОТЧИКОВ =====
+# ===== ФУНКЦИИ ДЛЯ ОБРАБОТЧИКОВ =====
 
 def show_schedule_and_top(call):
     try:
         try:
-            bot.edit_message_text(
-                "⏳ Загружаю календарь...",
-                call.message.chat.id,
-                call.message.message_id
-            )
+            bot.edit_message_text("⏳ Загружаю календарь...", call.message.chat.id, call.message.message_id)
         except:
             pass
         
@@ -665,11 +608,20 @@ def show_schedule_and_top(call):
             for race in future_races:
                 lines.append(f"📅 {race['date']} — **{race['label']}**")
         
-        top5 = get_top5_from_espn()
-        if top5:
-            lines.extend(["", "🏆 **Топ-5 чемпионата**", ""])
-            for i, line in enumerate(top5, 1):
-                lines.append(f"{i}. {line}")
+        # Топ-5 из ESPN
+        try:
+            standings_url = "https://site.api.espn.com/apis/site/v2/sports/racing/irl/standings"
+            s_resp = requests.get(standings_url, timeout=10)
+            s_data = s_resp.json()
+            entries = s_data.get('standings', [{}])[0].get('entries', [])[:5]
+            if entries:
+                lines.extend(["", "🏆 **Топ-5 чемпионата**", ""])
+                for i, entry in enumerate(entries, 1):
+                    name = entry.get('athlete', {}).get('displayName', 'Неизвестно')
+                    points = entry.get('points', 0)
+                    lines.append(f"{i}. {name} — {points} очков")
+        except:
+            pass
         
         response_text = "\n".join(lines)
         if len(response_text) > 4000:
@@ -818,10 +770,14 @@ def show_news(call):
             description = article.get('description', '')[:200]
             link = article.get('links', {}).get('web', {}).get('href', '#')
             
-            # Переводим на русский
-            ru_headline, ru_description = translate_news_to_russian(headline, description)
+            # Пробуем перевести через Нико
+            try:
+                translated = ask_nico(f"Переведи на русский эту новость: {headline}. {description}")
+                ru_headline, ru_description = translated.split('\n', 1) if '\n' in translated else (headline, description)
+            except:
+                ru_headline, ru_description = headline, description
             
-            text += f"**{ru_headline}**\n{ru_description}...\n[Читать]({link})\n\n"
+            text += f"**{ru_headline}**\n{ru_description}...\n[Читать]({link})\n\n_Переведено с помощью Nico AI_\n\n"
         
         if len(text) > 4000:
             text = text[:3997] + "..."
@@ -897,12 +853,49 @@ def handle_nico_input(message, data):
         parse_mode="Markdown"
     )
 
+def handle_ticket_input(message):
+    """Обработка заявки в ТП"""
+    try:
+        parts = message.text.split('|')
+        issue = parts[0].strip()
+        contact = parts[1].strip() if len(parts) > 1 else message.from_user.username or "Не указан"
+    except:
+        issue = message.text
+        contact = message.from_user.username or "Не указан"
+    
+    ticket_id = create_ticket(message.from_user.id, issue, contact)
+    
+    bot.send_message(
+        message.chat.id,
+        f"✅ **Заявка #{ticket_id}** создана!\n\n"
+        f"Админы скоро ответят.\n"
+        f"Можешь отслеживать статус через /ticket"
+    )
+    
+    # Отправляем уведомление админам
+    for admin_id in ADMIN_IDS:
+        try:
+            bot.send_message(
+                admin_id,
+                f"🎫 **Новая заявка #{ticket_id}**\n"
+                f"От: @{contact}\n"
+                f"ID: {message.from_user.id}\n"
+                f"Проблема: {issue[:200]}"
+            )
+        except:
+            pass
+
+# ===== АДМИН-ОБРАБОТЧИКИ =====
 def handle_admin(call):
     if call.data == "admin_stats":
-        total_users, total_commands, _ = get_stats()
-        text = f"📊 **Статистика**\n\n"
-        text += f"👤 Всего пользователей: {total_users}\n"
-        text += f"📝 Всего команд: {total_commands}"
+        stats = get_global_stats()
+        text = "📊 **Глобальная статистика**\n\n"
+        text += f"👤 Пользователей: {stats['total_users']}\n"
+        text += f"📝 Команд: {stats['total_commands']}\n\n"
+        text += "**Топ-10 команд:**\n"
+        for cmd, count in stats['top_commands'][:5]:
+            text += f"• {cmd} — {count}\n"
+        
         bot.edit_message_text(
             text,
             call.message.chat.id,
@@ -912,19 +905,16 @@ def handle_admin(call):
         )
     
     elif call.data == "admin_users":
-        conn = sqlite3.connect('indyleader.db')
-        c = conn.cursor()
-        c.execute('SELECT username, first_name, last_seen, total_commands FROM users ORDER BY last_seen DESC LIMIT 20')
-        users = c.fetchall()
-        conn.close()
-        
-        text = "👥 **Последние пользователи:**\n\n"
-        for u in users:
-            name = u[1] or u[0] or "Аноним"
-            text += f"• {name} — {u[3]} команд, последний раз: {u[2][:16]}\n"
+        users = get_all_users()
+        text = f"👥 **Все пользователи ({len(users)})**\n\n"
+        text += f"Активных за 7 дней: {len(get_active_users(7))}\n"
+        text += f"Активных за 30 дней: {len(get_active_users(30))}\n\n"
+        text += "Последние 10 ID:\n"
+        for uid in users[-10:]:
+            text += f"• `{uid}`\n"
         
         bot.edit_message_text(
-            text[:4000],
+            text,
             call.message.chat.id,
             call.message.message_id,
             reply_markup=admin_panel(),
@@ -938,7 +928,7 @@ def handle_admin(call):
         commands = c.fetchall()
         conn.close()
         
-        text = "📈 **Статистика команд:**\n\n"
+        text = "📈 **Статистика команд**\n\n"
         for cmd, count in commands:
             text += f"• {cmd} — {count} раз\n"
         
@@ -950,7 +940,118 @@ def handle_admin(call):
             parse_mode="Markdown"
         )
     
+    elif call.data == "admin_user_stats":
+        bot.send_message(
+            call.message.chat.id,
+            "🔍 **Поиск пользователя**\n\nВведите ID пользователя:",
+            reply_markup=back_to_menu()
+        )
+        set_state(call.from_user.id, "waiting_user_search")
+    
+    elif call.data == "admin_broadcast":
+        bot.send_message(
+            call.message.chat.id,
+            "📨 **Рассылка**\n\n"
+            "Введите текст рассылки.\n"
+            "Опции:\n"
+            "• `all` — всем пользователям\n"
+            "• `active` — активным за 7 дней\n"
+            "• `ID,ID` — конкретным пользователям\n\n"
+            "Пример: `all | Привет!`"
+        )
+        set_state(call.from_user.id, "waiting_broadcast")
+    
+    elif call.data == "admin_update_db":
+        msg = bot.send_message(
+            call.message.chat.id,
+            "🔄 Обновляю базу знаний..."
+        )
+        
+        asyncio.run(update_knowledge_base())
+        
+        bot.edit_message_text(
+            "✅ База знаний обновлена!\n"
+            "Нико теперь знает актуальные данные.",
+            msg.chat.id,
+            msg.message_id,
+            reply_markup=admin_panel()
+        )
+    
+    elif call.data == "admin_tickets":
+        tickets = get_open_tickets()
+        
+        if not tickets:
+            text = "🎫 **Открытых заявок нет**"
+        else:
+            text = f"🎫 **Открытые заявки ({len(tickets)})**\n\n"
+            for ticket in tickets[:10]:
+                text += f"#{ticket[0]} | от @{ticket[3]} | {ticket[4][:16]}\n"
+                text += f"  {ticket[2][:80]}...\n\n"
+            text += f"\nИспользуй /close_ticket [id] чтобы закрыть"
+        
+        bot.edit_message_text(
+            text,
+            call.message.chat.id,
+            call.message.message_id,
+            reply_markup=admin_panel(),
+            parse_mode="Markdown"
+        )
+    
     bot.answer_callback_query(call.id)
+
+def handle_broadcast_input(message, data):
+    """Обрабатывает рассылку"""
+    try:
+        parts = message.text.split('|', 1)
+        target = parts[0].strip().lower()
+        text = parts[1].strip()
+    except:
+        bot.send_message(
+            message.chat.id,
+            "❌ Неверный формат. Используй: `all | текст`"
+        )
+        return
+    
+    # Определяем получателей
+    if target == "all":
+        users = get_all_users()
+    elif target == "active":
+        users = get_active_users(7)
+    else:
+        try:
+            users = [int(x.strip()) for x in target.split(',')]
+        except:
+            bot.send_message(
+                message.chat.id,
+                "❌ Неверный формат ID. Используй: `12345,67890,11111 | текст`"
+            )
+            return
+    
+    if not users:
+        bot.send_message(
+            message.chat.id,
+            "⚠️ Нет пользователей для рассылки"
+        )
+        return
+    
+    # Подтверждение
+    confirm = InlineKeyboardMarkup()
+    confirm.add(
+        InlineKeyboardButton("✅ Отправить", callback_data=f"broadcast_confirm_{len(users)}"),
+        InlineKeyboardButton("❌ Отмена", callback_data="menu")
+    )
+    
+    bot.send_message(
+        message.chat.id,
+        f"📨 **Подтверждение рассылки**\n\n"
+        f"Получателей: {len(users)}\n"
+        f"Текст:\n{text[:200]}\n\n"
+        f"Нажми 'Отправить' для запуска.",
+        reply_markup=confirm
+    )
+    
+    # Сохраняем данные для отправки
+    set_state(message.from_user.id, "broadcast_confirm", f"{users}|{text}")
 
 # ===== ВЕБХУК =====
 @app.post("/webhook")
@@ -969,7 +1070,18 @@ def set_webhook():
     bot.set_webhook(url=WEBHOOK_URL)
     print("✅ Webhook установлен")
 
+# ===== ЗАПУСК =====
 if __name__ == "__main__":
+    # Запускаем автопарсинг в отдельном потоке
+    threading.Thread(target=start_auto_update, daemon=True).start()
+    
+    # Первое обновление базы
+    print("🔄 Первоначальное обновление базы знаний...")
+    asyncio.run(update_knowledge_base())
+    
+    # Установка вебхука
     set_webhook()
+    
+    # Запуск сервера
     port = int(os.getenv("PORT", 8000))
     uvicorn.run(app, host="0.0.0.0", port=port)
