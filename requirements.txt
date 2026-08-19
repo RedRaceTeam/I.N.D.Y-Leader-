@@ -1,5 +1,23 @@
+# Базовые
 pyTelegramBotAPI==4.15.2
 requests==2.31.0
 fastapi==0.109.0
 uvicorn[standard]==0.27.0
 python-dotenv==1.0.0
+
+# Для админки и рассылок
+schedule==1.2.0
+sqlite3
+
+# Для RAG и базы знаний
+langchain==0.3.0
+chromadb==0.5.0
+sentence-transformers==3.0.0
+
+# Для парсинга (XDriver + Playwright)
+playwright==1.52.0
+playwright-stealth==1.0.6
+
+# Для работы с датами
+python-dateutil==2.9.0
+pytz==2024.1
