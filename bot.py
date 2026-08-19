@@ -28,13 +28,17 @@ if not TOKEN:
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 WEBHOOK_URL = os.getenv("WEBHOOK_URL", "https://turbo-train-2b9d.onrender.com/webhook")
 
-# ID админов (можно передать через переменную окружения)
-ADMIN_IDS = [7025868617, 7946032603]
+# ===== АДМИНЫ ИЗ ПЕРЕМЕННОЙ ОКРУЖЕНИЯ =====
+ADMIN_IDS = []
 if os.getenv("ADMIN_IDS"):
     try:
         ADMIN_IDS = [int(x.strip()) for x in os.getenv("ADMIN_IDS").split(',')]
+        print(f"✅ Загружено {len(ADMIN_IDS)} админов")
     except:
-        pass
+        ADMIN_IDS = []
+        print("⚠️ Ошибка парсинга ADMIN_IDS, админ-панель недоступна")
+else:
+    print("⚠️ ADMIN_IDS не задан, админ-панель недоступна")
 
 # ===== ИНИЦИАЛИЗАЦИЯ БОТА =====
 bot = telebot.TeleBot(TOKEN)
@@ -45,7 +49,6 @@ def init_db():
     conn = sqlite3.connect('indyleader.db', check_same_thread=False)
     c = conn.cursor()
     
-    # Таблица пользователей
     c.execute('''
         CREATE TABLE IF NOT EXISTS users (
             user_id INTEGER PRIMARY KEY,
@@ -58,7 +61,6 @@ def init_db():
         )
     ''')
     
-    # Таблица статистики команд
     c.execute('''
         CREATE TABLE IF NOT EXISTS stats (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -68,7 +70,6 @@ def init_db():
         )
     ''')
     
-    # Таблица состояний (вместо register_next_step_handler)
     c.execute('''
         CREATE TABLE IF NOT EXISTS user_states (
             user_id INTEGER PRIMARY KEY,
@@ -78,9 +79,7 @@ def init_db():
         )
     ''')
     
-    # Включаем WAL режим для производительности
     c.execute('PRAGMA journal_mode=WAL')
-    
     conn.commit()
     conn.close()
 
@@ -158,7 +157,6 @@ def clear_state(user_id):
 
 # ===== ЭКРАНИРОВАНИЕ MARKDOWN =====
 def escape_markdown(text):
-    """Экранирует спецсимволы для Telegram Markdown"""
     if not text:
         return text
     escape_chars = r'_*[]()~`>#+-=|{}.!'
@@ -166,7 +164,6 @@ def escape_markdown(text):
 
 # ===== ФУНКЦИЯ ПОЛУЧЕНИЯ ТОП-5 ИЗ ESPN =====
 def get_top5_from_espn():
-    """Возвращает топ-5 пилотов из ESPN API"""
     try:
         url = "https://site.api.espn.com/apis/site/v2/sports/racing/irl/standings"
         resp = requests.get(url, timeout=10)
@@ -186,6 +183,51 @@ def get_top5_from_espn():
         logger.error(f"ESPN standings error: {e}")
         return []
 
+# ===== ФУНКЦИЯ ПЕРЕВОДА НОВОСТЕЙ (через Нико) =====
+def translate_news_to_russian(headline, description):
+    """Переводит новость на русский через Groq"""
+    if not GROQ_API_KEY:
+        return headline, description
+    
+    try:
+        prompt = f"Переведи на русский язык эту новость IndyCar:\nЗаголовок: {headline}\nОписание: {description}\n\nОтвет дай в формате:\nЗаголовок: [перевод]\nОписание: [перевод]"
+        
+        response = requests.post(
+            "https://api.groq.com/openai/v1/chat/completions",
+            headers={
+                "Authorization": f"Bearer {GROQ_API_KEY}",
+                "Content-Type": "application/json"
+            },
+            json={
+                "model": "llama-3.3-70b-versatile",
+                "messages": [
+                    {"role": "system", "content": "Ты переводчик. Переводи новости IndyCar с английского на русский. Сохраняй стиль и терминологию."},
+                    {"role": "user", "content": prompt}
+                ],
+                "temperature": 0.3,
+                "max_tokens": 300
+            },
+            timeout=15
+        )
+        
+        if response.status_code == 200:
+            data = response.json()
+            translated = data["choices"][0]["message"]["content"]
+            
+            # Парсим ответ
+            import re
+            title_match = re.search(r'Заголовок:\s*(.+?)(?:\n|$)', translated)
+            desc_match = re.search(r'Описание:\s*(.+?)(?:\n|$)', translated, re.DOTALL)
+            
+            new_title = title_match.group(1).strip() if title_match else headline
+            new_desc = desc_match.group(1).strip() if desc_match else description
+            
+            return new_title, new_desc
+    except Exception as e:
+        logger.error(f"Translation error: {e}")
+    
+    return headline, description
+
 # ===== AI-ФУНКЦИЯ (НИКО) =====
 def ask_nico(question: str) -> str:
     if not GROQ_API_KEY:
@@ -199,7 +241,7 @@ def ask_nico(question: str) -> str:
                 "Content-Type": "application/json"
             },
             json={
-                "model": "llama-3.1-70b-versatile",
+                "model": "llama-3.3-70b-versatile",
                 "messages": [
                     {"role": "system", "content": """
 Ты — Нико, живой эксперт по IndyCar.
@@ -239,32 +281,28 @@ def ask_nico(question: str) -> str:
         logger.error(f"AI error: {e}")
         return f"⚠️ Ошибка: {e}"
 
-# ===== КЛАВИАТУРЫ =====
+# ===== КЛАВИАТУРЫ (без капса) =====
 def main_menu():
     markup = InlineKeyboardMarkup(row_width=2)
     
-    # Ряд 1: Календарь и Топ
     markup.add(
-        InlineKeyboardButton("🏁 КАЛЕНДАРЬ + ТОП", callback_data="schedule_top"),
-        InlineKeyboardButton("🏎️ ПИЛОТЫ", callback_data="drivers_list")
+        InlineKeyboardButton("🏁 Календарь и топ", callback_data="schedule_top"),
+        InlineKeyboardButton("🏎️ Пилоты", callback_data="drivers_list")
     )
     
-    # Ряд 2: История
     markup.add(
-        InlineKeyboardButton("🏆 ИНДИ 500", callback_data="indy500_menu"),
-        InlineKeyboardButton("🎲 РАНДОМ", callback_data="random_driver")
+        InlineKeyboardButton("🏆 Indy 500", callback_data="indy500_menu"),
+        InlineKeyboardButton("🎲 Случайный пилот", callback_data="random_driver")
     )
     
-    # Ряд 3: AI и Новости
     markup.add(
-        InlineKeyboardButton("🧠 СПРОСИТЬ НИКО", callback_data="ask_nico"),
-        InlineKeyboardButton("📰 НОВОСТИ", callback_data="news")
+        InlineKeyboardButton("🧠 Спросить Нико", callback_data="ask_nico"),
+        InlineKeyboardButton("📰 Новости", callback_data="news")
     )
     
-    # Ряд 4: Донат и О проекте
     markup.add(
-        InlineKeyboardButton("❤️ ПОДДЕРЖАТЬ", callback_data="donate"),
-        InlineKeyboardButton("ℹ️ О ПРОЕКТЕ", callback_data="about")
+        InlineKeyboardButton("❤️ Поддержать", callback_data="donate"),
+        InlineKeyboardButton("ℹ️ О проекте", callback_data="about")
     )
     
     return markup
@@ -275,10 +313,8 @@ def back_to_menu():
     return markup
 
 def drivers_list_buttons():
-    """Кнопки пилотов с группировкой по командам"""
     markup = InlineKeyboardMarkup(row_width=2)
     
-    # Группируем по командам
     teams = {}
     for code, d in DRIVERS.items():
         team = d['team']
@@ -286,12 +322,9 @@ def drivers_list_buttons():
             teams[team] = []
         teams[team].append((code, d))
     
-    # Добавляем кнопки
     for team, drivers in sorted(teams.items()):
-        # Заголовок команды (некликабельный)
         markup.add(InlineKeyboardButton(f"━━ {team} ━━", callback_data="noop"))
         
-        # Пилоты по 2 в ряд
         row = []
         for code, d in drivers:
             surname = d['name'].split()[-1]
@@ -312,7 +345,7 @@ def indy500_menu():
     markup = InlineKeyboardMarkup(row_width=2)
     markup.add(
         InlineKeyboardButton("📅 По году", callback_data="winner_prompt"),
-        InlineKeyboardButton("🏆 Топ-10", callback_data="top_winners"),
+        InlineKeyboardButton("🏆 Топ-10 победителей", callback_data="top_winners"),
         InlineKeyboardButton("🔙 Назад", callback_data="menu")
     )
     return markup
@@ -345,9 +378,14 @@ def start(message):
 
 @bot.message_handler(commands=['admin'])
 def admin_command(message):
+    if not ADMIN_IDS:
+        bot.reply_to(message, "⛔ Админ-панель отключена")
+        return
+    
     if message.from_user.id not in ADMIN_IDS:
         bot.reply_to(message, "⛔ У вас нет доступа")
         return
+    
     log_command(message.from_user.id, 'admin')
     bot.send_message(
         message.chat.id,
@@ -362,7 +400,6 @@ def handle_text_messages(message):
     user_id = message.from_user.id
     state, data = get_state(user_id)
     
-    # Если нет состояния — предлагаем меню
     if not state:
         bot.send_message(
             message.chat.id,
@@ -371,7 +408,6 @@ def handle_text_messages(message):
         )
         return
     
-    # Обрабатываем состояния
     if state == "waiting_year":
         handle_winner_year_input(message, data)
         clear_state(user_id)
@@ -388,7 +424,6 @@ def handle_callback(call):
     
     user_id = call.from_user.id
     
-    # === ГЛАВНОЕ МЕНЮ ===
     if call.data == "menu":
         try:
             bot.edit_message_text(
@@ -408,13 +443,11 @@ def handle_callback(call):
         bot.answer_callback_query(call.id)
         return
     
-    # === КАЛЕНДАРЬ + ТОП ===
     if call.data == "schedule_top":
         log_command(user_id, 'schedule_top')
         show_schedule_and_top(call)
         return
     
-    # === ПИЛОТЫ (список) ===
     if call.data == "drivers_list":
         log_command(user_id, 'drivers_list')
         try:
@@ -433,13 +466,11 @@ def handle_callback(call):
         bot.answer_callback_query(call.id)
         return
     
-    # === ИНФО О ПИЛОТЕ ===
     if call.data.startswith("driver_"):
         log_command(user_id, 'driver_info')
         show_driver_info(call)
         return
     
-    # === МЕНЮ ИНДИ 500 ===
     if call.data == "indy500_menu":
         log_command(user_id, 'indy500_menu')
         try:
@@ -460,13 +491,11 @@ def handle_callback(call):
         bot.answer_callback_query(call.id)
         return
     
-    # === ТОП-10 ПОБЕДИТЕЛЕЙ ===
     if call.data == "top_winners":
         log_command(user_id, 'top_winners')
         show_top_winners(call)
         return
     
-    # === ЗАПРОС ГОДА (Indy 500) ===
     if call.data == "winner_prompt":
         log_command(user_id, 'winner_prompt')
         set_state(user_id, "waiting_year")
@@ -489,13 +518,11 @@ def handle_callback(call):
         bot.answer_callback_query(call.id)
         return
     
-    # === СЛУЧАЙНЫЙ ПИЛОТ ===
     if call.data == "random_driver":
         log_command(user_id, 'random_driver')
         show_random_driver(call)
         return
     
-    # === НИКО (задать вопрос) ===
     if call.data == "ask_nico":
         log_command(user_id, 'ask_nico')
         set_state(user_id, "waiting_nico")
@@ -514,13 +541,11 @@ def handle_callback(call):
         bot.answer_callback_query(call.id)
         return
     
-    # === НОВОСТИ ===
     if call.data == "news":
         log_command(user_id, 'news')
         show_news(call)
         return
     
-    # === ДОНАТ ===
     if call.data == "donate":
         log_command(user_id, 'donate')
         try:
@@ -545,7 +570,6 @@ def handle_callback(call):
         bot.answer_callback_query(call.id)
         return
     
-    # === О ПРОЕКТЕ ===
     if call.data == "about":
         log_command(user_id, 'about')
         try:
@@ -576,15 +600,16 @@ def handle_callback(call):
         bot.answer_callback_query(call.id)
         return
     
-    # === АДМИН-ПАНЕЛЬ ===
     if call.data in ["admin_stats", "admin_users", "admin_commands"]:
+        if not ADMIN_IDS:
+            bot.answer_callback_query(call.id, "Админ-панель отключена")
+            return
         if user_id not in ADMIN_IDS:
             bot.answer_callback_query(call.id, "Нет доступа")
             return
         handle_admin(call)
         return
     
-    # === NOOP ===
     if call.data == "noop":
         bot.answer_callback_query(call.id)
         return
@@ -594,9 +619,7 @@ def handle_callback(call):
 # ===== ОТДЕЛЬНЫЕ ФУНКЦИИ ДЛЯ ОБРАБОТЧИКОВ =====
 
 def show_schedule_and_top(call):
-    """Показывает календарь и топ-5"""
     try:
-        # Отправляем заглушку
         try:
             bot.edit_message_text(
                 "⏳ Загружаю календарь...",
@@ -606,7 +629,6 @@ def show_schedule_and_top(call):
         except:
             pass
         
-        # Получаем календарь
         url = "https://site.api.espn.com/apis/site/v2/sports/racing/irl/scoreboard?seasontype=2&level=3"
         resp = requests.get(url, timeout=10)
         resp.raise_for_status()
@@ -636,18 +658,16 @@ def show_schedule_and_top(call):
         future_races.sort(key=lambda x: x['timestamp'])
         future_races = future_races[:10]
         
-        # Формируем ответ
-        lines = ["🏁 **БЛИЖАЙШИЕ ГОНКИ 2026**", ""]
+        lines = ["🏁 **Ближайшие гонки 2026**", ""]
         if not future_races:
             lines.append("🏁 Сезон завершен или календарь не загружен")
         else:
             for race in future_races:
                 lines.append(f"📅 {race['date']} — **{race['label']}**")
         
-        # Топ-5
         top5 = get_top5_from_espn()
         if top5:
-            lines.extend(["", "🏆 **ТОП-5 ЧЕМПИОНАТА**", ""])
+            lines.extend(["", "🏆 **Топ-5 чемпионата**", ""])
             for i, line in enumerate(top5, 1):
                 lines.append(f"{i}. {line}")
         
@@ -674,7 +694,6 @@ def show_schedule_and_top(call):
     bot.answer_callback_query(call.id)
 
 def show_driver_info(call):
-    """Показывает информацию о пилоте с фото"""
     code = call.data.replace("driver_", "")
     d = DRIVERS.get(code)
     if not d:
@@ -716,7 +735,6 @@ def show_driver_info(call):
     bot.answer_callback_query(call.id)
 
 def show_top_winners(call):
-    """Показывает топ-10 победителей Indy 500"""
     from collections import Counter
     
     wins = Counter()
@@ -727,7 +745,7 @@ def show_top_winners(call):
     top = wins.most_common(10)
     medals = ["🥇", "🥈", "🥉", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣", "🔟"]
     
-    text = "🏆 **10 ВЕЛИЧАЙШИХ ПОБЕДИТЕЛЕЙ**\n\n"
+    text = "🏆 **10 величайших победителей**\n\n"
     for i, (driver, count) in enumerate(top):
         text += f"{medals[i]} {driver} — **{count}** побед\n"
     
@@ -741,7 +759,6 @@ def show_top_winners(call):
     bot.answer_callback_query(call.id)
 
 def show_random_driver(call):
-    """Показывает случайного пилота"""
     if not DRIVERS:
         bot.send_message(
             call.message.chat.id,
@@ -778,7 +795,6 @@ def show_random_driver(call):
     bot.answer_callback_query(call.id)
 
 def show_news(call):
-    """Показывает новости IndyCar"""
     try:
         url = "https://site.api.espn.com/apis/site/v2/sports/racing/irl/news"
         resp = requests.get(url, timeout=10)
@@ -795,12 +811,17 @@ def show_news(call):
             bot.answer_callback_query(call.id)
             return
         
-        text = "📰 **НОВОСТИ INDYCAR**\n\n"
+        text = "📰 **Новости IndyCar**\n\n"
+        
         for article in articles:
             headline = article.get('headline', 'Без заголовка')
-            description = article.get('description', '')[:150]
+            description = article.get('description', '')[:200]
             link = article.get('links', {}).get('web', {}).get('href', '#')
-            text += f"**{headline}**\n{description}...\n[Читать]({link})\n\n"
+            
+            # Переводим на русский
+            ru_headline, ru_description = translate_news_to_russian(headline, description)
+            
+            text += f"**{ru_headline}**\n{ru_description}...\n[Читать]({link})\n\n"
         
         if len(text) > 4000:
             text = text[:3997] + "..."
@@ -825,7 +846,6 @@ def show_news(call):
     bot.answer_callback_query(call.id)
 
 def handle_winner_year_input(message, data):
-    """Обрабатывает ввод года для Indy 500"""
     if message.text.lower() in ["назад", "меню"]:
         start(message)
         return
@@ -859,7 +879,6 @@ def handle_winner_year_input(message, data):
     )
 
 def handle_nico_input(message, data):
-    """Обрабатывает вопрос к Нико"""
     if message.text.lower() in ["назад", "меню"]:
         start(message)
         return
@@ -879,7 +898,6 @@ def handle_nico_input(message, data):
     )
 
 def handle_admin(call):
-    """Обрабатывает админ-команды"""
     if call.data == "admin_stats":
         total_users, total_commands, _ = get_stats()
         text = f"📊 **Статистика**\n\n"
