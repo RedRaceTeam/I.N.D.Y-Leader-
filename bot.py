@@ -5,32 +5,47 @@ import random
 import uvicorn
 import logging
 import sqlite3
-from datetime import datetime
-from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
+import re
+import time
+from datetime import datetime, timezone
+from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton, InputMediaPhoto
 from fastapi import FastAPI, Request, Response
 from data.winners import winners
 from data.drivers import DRIVERS
 
-logging.basicConfig(level=logging.INFO)
+# ===== НАСТРОЙКА ЛОГГИРОВАНИЯ =====
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
 logger = logging.getLogger(__name__)
 
+# ===== ПЕРЕМЕННЫЕ ОКРУЖЕНИЯ =====
 TOKEN = os.getenv("BOT_TOKEN")
 if not TOKEN:
     raise ValueError("BOT_TOKEN не найден")
 
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
-WEBHOOK_URL = "https://turbo-train-2b9d.onrender.com/webhook"
+WEBHOOK_URL = os.getenv("WEBHOOK_URL", "https://turbo-train-2b9d.onrender.com/webhook")
 
-# ID админов
+# ID админов (можно передать через переменную окружения)
 ADMIN_IDS = [7025868617, 7946032603]
+if os.getenv("ADMIN_IDS"):
+    try:
+        ADMIN_IDS = [int(x.strip()) for x in os.getenv("ADMIN_IDS").split(',')]
+    except:
+        pass
 
+# ===== ИНИЦИАЛИЗАЦИЯ БОТА =====
 bot = telebot.TeleBot(TOKEN)
 app = FastAPI()
 
-# ===== БАЗА ДАННЫХ (SQLite) =====
+# ===== БАЗА ДАННЫХ =====
 def init_db():
-    conn = sqlite3.connect('indyleader.db')
+    conn = sqlite3.connect('indyleader.db', check_same_thread=False)
     c = conn.cursor()
+    
+    # Таблица пользователей
     c.execute('''
         CREATE TABLE IF NOT EXISTS users (
             user_id INTEGER PRIMARY KEY,
@@ -42,6 +57,8 @@ def init_db():
             total_commands INTEGER DEFAULT 0
         )
     ''')
+    
+    # Таблица статистики команд
     c.execute('''
         CREATE TABLE IF NOT EXISTS stats (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -50,18 +67,31 @@ def init_db():
             timestamp TEXT
         )
     ''')
+    
+    # Таблица состояний (вместо register_next_step_handler)
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS user_states (
+            user_id INTEGER PRIMARY KEY,
+            state TEXT,
+            data TEXT,
+            updated_at TEXT
+        )
+    ''')
+    
+    # Включаем WAL режим для производительности
+    c.execute('PRAGMA journal_mode=WAL')
+    
     conn.commit()
     conn.close()
 
 init_db()
 
+# ===== ФУНКЦИИ РАБОТЫ С БД =====
 def log_user(user):
     conn = sqlite3.connect('indyleader.db')
     c = conn.cursor()
     now = datetime.now().isoformat()
-    c.execute('''
-        SELECT user_id FROM users WHERE user_id = ?
-    ''', (user.id,))
+    c.execute('SELECT user_id FROM users WHERE user_id = ?', (user.id,))
     if c.fetchone():
         c.execute('''
             UPDATE users SET last_seen = ?, total_commands = total_commands + 1
@@ -100,7 +130,63 @@ def get_stats():
     conn.close()
     return total_users, total_commands, top_users
 
-# ===== AI-ФУНКЦИЯ (Нико) =====
+# ===== ФУНКЦИИ СОСТОЯНИЙ =====
+def set_state(user_id, state, data=None):
+    conn = sqlite3.connect('indyleader.db')
+    c = conn.cursor()
+    c.execute('''
+        INSERT OR REPLACE INTO user_states (user_id, state, data, updated_at)
+        VALUES (?, ?, ?, ?)
+    ''', (user_id, state, data, datetime.now().isoformat()))
+    conn.commit()
+    conn.close()
+
+def get_state(user_id):
+    conn = sqlite3.connect('indyleader.db')
+    c = conn.cursor()
+    c.execute('SELECT state, data FROM user_states WHERE user_id = ?', (user_id,))
+    result = c.fetchone()
+    conn.close()
+    return result if result else (None, None)
+
+def clear_state(user_id):
+    conn = sqlite3.connect('indyleader.db')
+    c = conn.cursor()
+    c.execute('DELETE FROM user_states WHERE user_id = ?', (user_id,))
+    conn.commit()
+    conn.close()
+
+# ===== ЭКРАНИРОВАНИЕ MARKDOWN =====
+def escape_markdown(text):
+    """Экранирует спецсимволы для Telegram Markdown"""
+    if not text:
+        return text
+    escape_chars = r'_*[]()~`>#+-=|{}.!'
+    return re.sub(f'([{re.escape(escape_chars)}])', r'\\\1', text)
+
+# ===== ФУНКЦИЯ ПОЛУЧЕНИЯ ТОП-5 ИЗ ESPN =====
+def get_top5_from_espn():
+    """Возвращает топ-5 пилотов из ESPN API"""
+    try:
+        url = "https://site.api.espn.com/apis/site/v2/sports/racing/irl/standings"
+        resp = requests.get(url, timeout=10)
+        resp.raise_for_status()
+        data = resp.json()
+        
+        entries = data.get('standings', [{}])[0].get('entries', [])[:5]
+        top5 = []
+        for entry in entries:
+            athlete = entry.get('athlete', {})
+            name = athlete.get('displayName', 'Неизвестно')
+            points = entry.get('points', 0)
+            top5.append(f"{name} — {points} очков")
+        
+        return top5
+    except Exception as e:
+        logger.error(f"ESPN standings error: {e}")
+        return []
+
+# ===== AI-ФУНКЦИЯ (НИКО) =====
 def ask_nico(question: str) -> str:
     if not GROQ_API_KEY:
         return "⚠️ Нико не настроен (нет API-ключа)"
@@ -113,7 +199,7 @@ def ask_nico(question: str) -> str:
                 "Content-Type": "application/json"
             },
             json={
-                "model": "llama-3.3-70b-versatile",
+                "model": "llama-3.1-70b-versatile",
                 "messages": [
                     {"role": "system", "content": """
 Ты — Нико, живой эксперт по IndyCar.
@@ -140,8 +226,15 @@ def ask_nico(question: str) -> str:
             },
             timeout=30
         )
+        
+        if response.status_code != 200:
+            error_detail = response.json().get('error', {}).get('message', 'Неизвестная ошибка')
+            return f"⚠️ Groq API ошибка {response.status_code}: {error_detail}"
+        
         data = response.json()
         return data["choices"][0]["message"]["content"]
+    except requests.exceptions.Timeout:
+        return "⏰ Нико слишком долго думал. Попробуй еще раз."
     except Exception as e:
         logger.error(f"AI error: {e}")
         return f"⚠️ Ошибка: {e}"
@@ -149,21 +242,31 @@ def ask_nico(question: str) -> str:
 # ===== КЛАВИАТУРЫ =====
 def main_menu():
     markup = InlineKeyboardMarkup(row_width=2)
+    
+    # Ряд 1: Календарь и Топ
     markup.add(
-        InlineKeyboardButton("🏁 Топ-5 и календарь", callback_data="indycar"),
-        InlineKeyboardButton("🏎️ Инфо о гонщике", callback_data="info_list")
+        InlineKeyboardButton("🏁 КАЛЕНДАРЬ + ТОП", callback_data="schedule_top"),
+        InlineKeyboardButton("🏎️ ПИЛОТЫ", callback_data="drivers_list")
     )
+    
+    # Ряд 2: История
     markup.add(
-        InlineKeyboardButton("🏆 Победители Indy 500", callback_data="winner_prompt"),
-        InlineKeyboardButton("🎲 Случайный пилот", callback_data="random_driver")
+        InlineKeyboardButton("🏆 ИНДИ 500", callback_data="indy500_menu"),
+        InlineKeyboardButton("🎲 РАНДОМ", callback_data="random_driver")
     )
+    
+    # Ряд 3: AI и Новости
     markup.add(
-        InlineKeyboardButton("🧠 Спросить Нико", callback_data="ask_nico"),
-        InlineKeyboardButton("ℹ️ О проекте", callback_data="about")
+        InlineKeyboardButton("🧠 СПРОСИТЬ НИКО", callback_data="ask_nico"),
+        InlineKeyboardButton("📰 НОВОСТИ", callback_data="news")
     )
+    
+    # Ряд 4: Донат и О проекте
     markup.add(
-        InlineKeyboardButton("❤️ Поддержать проект", callback_data="donate")
+        InlineKeyboardButton("❤️ ПОДДЕРЖАТЬ", callback_data="donate"),
+        InlineKeyboardButton("ℹ️ О ПРОЕКТЕ", callback_data="about")
     )
+    
     return markup
 
 def back_to_menu():
@@ -171,13 +274,47 @@ def back_to_menu():
     markup.add(InlineKeyboardButton("🔙 Назад в меню", callback_data="menu"))
     return markup
 
-def drivers_list():
+def drivers_list_buttons():
+    """Кнопки пилотов с группировкой по командам"""
     markup = InlineKeyboardMarkup(row_width=2)
-    if not DRIVERS:
-        markup.add(InlineKeyboardButton("⚠️ Нет данных", callback_data="menu"))
-        return markup
+    
+    # Группируем по командам
+    teams = {}
     for code, d in DRIVERS.items():
-        markup.add(InlineKeyboardButton(f"{code} - {d['name']}", callback_data=f"driver_{code}"))
+        team = d['team']
+        if team not in teams:
+            teams[team] = []
+        teams[team].append((code, d))
+    
+    # Добавляем кнопки
+    for team, drivers in sorted(teams.items()):
+        # Заголовок команды (некликабельный)
+        markup.add(InlineKeyboardButton(f"━━ {team} ━━", callback_data="noop"))
+        
+        # Пилоты по 2 в ряд
+        row = []
+        for code, d in drivers:
+            surname = d['name'].split()[-1]
+            row.append(InlineKeyboardButton(
+                f"{surname} #{d['number']}",
+                callback_data=f"driver_{code}"
+            ))
+            if len(row) == 2:
+                markup.add(*row)
+                row = []
+        if row:
+            markup.add(*row)
+    
+    markup.add(InlineKeyboardButton("🔙 Назад", callback_data="menu"))
+    return markup
+
+def indy500_menu():
+    markup = InlineKeyboardMarkup(row_width=2)
+    markup.add(
+        InlineKeyboardButton("📅 По году", callback_data="winner_prompt"),
+        InlineKeyboardButton("🏆 Топ-10", callback_data="top_winners"),
+        InlineKeyboardButton("🔙 Назад", callback_data="menu")
+    )
     return markup
 
 def admin_panel():
@@ -190,21 +327,18 @@ def admin_panel():
     )
     return markup
 
-# ===== ОБРАБОТЧИКИ =====
+# ===== ОБРАБОТЧИК КОМАНД =====
 @bot.message_handler(commands=['start'])
 def start(message):
     log_user(message.from_user)
     log_command(message.from_user.id, 'start')
+    clear_state(message.from_user.id)
+    
     bot.send_message(
         message.chat.id,
         "🏁 **I.N.D.Y Leader**\n\n"
-        "Я бот для фанатов IndyCar. Что хочешь узнать?\n\n"
-        "• Топ-5 чемпионата и календарь\n"
-        "• Информацию о любом гонщике\n"
-        "• Победителей Indy 500 по годам\n"
-        "• Случайного пилота\n"
-        "• Задать вопрос Нико\n\n"
-        "Выбирай кнопку ниже 👇",
+        "Бот для настоящих фанатов IndyCar.\n"
+        "Выбирай кнопку и погнали!",
         reply_markup=main_menu(),
         parse_mode="Markdown"
     )
@@ -212,120 +346,59 @@ def start(message):
 @bot.message_handler(commands=['admin'])
 def admin_command(message):
     if message.from_user.id not in ADMIN_IDS:
-        bot.reply_to(message, "⛔ У вас нет доступа к админ-панели")
+        bot.reply_to(message, "⛔ У вас нет доступа")
         return
     log_command(message.from_user.id, 'admin')
     bot.send_message(
         message.chat.id,
-        "🔐 **Админ-панель**\n\n"
-        "Выберите действие:",
+        "🔐 **Админ-панель**",
         reply_markup=admin_panel(),
         parse_mode="Markdown"
     )
 
+# ===== ОБРАБОТЧИК ВСЕХ ТЕКСТОВЫХ СООБЩЕНИЙ =====
+@bot.message_handler(func=lambda message: True)
+def handle_text_messages(message):
+    user_id = message.from_user.id
+    state, data = get_state(user_id)
+    
+    # Если нет состояния — предлагаем меню
+    if not state:
+        bot.send_message(
+            message.chat.id,
+            "Используй кнопки в меню 👇",
+            reply_markup=main_menu()
+        )
+        return
+    
+    # Обрабатываем состояния
+    if state == "waiting_year":
+        handle_winner_year_input(message, data)
+        clear_state(user_id)
+    elif state == "waiting_nico":
+        handle_nico_input(message, data)
+        clear_state(user_id)
+
+# ===== ОБРАБОТЧИК КНОПОК =====
 @bot.callback_query_handler(func=lambda call: True)
 def handle_callback(call):
     if call.message is None:
         bot.answer_callback_query(call.id, "Сообщение удалено")
         return
-
-    try:
-        bot.clear_step_handler(call.message)
-    except Exception as e:
-        logger.error(f"Clear step handler error: {e}")
-
-    # === АДМИН-СТАТИСТИКА ===
-    if call.data == "admin_stats":
-        if call.from_user.id not in ADMIN_IDS:
-            bot.answer_callback_query(call.id, "Нет доступа")
-            return
-        total_users, total_commands, _ = get_stats()
-        bot.edit_message_text(
-            f"📊 **Статистика**\n\n"
-            f"👤 Всего пользователей: {total_users}\n"
-            f"📝 Всего команд: {total_commands}\n\n"
-            f"Топ-10 пользователей:",
-            call.message.chat.id,
-            call.message.message_id,
-            reply_markup=admin_panel(),
-            parse_mode="Markdown"
-        )
-        bot.answer_callback_query(call.id)
-        return
-
-    if call.data == "admin_users":
-        if call.from_user.id not in ADMIN_IDS:
-            bot.answer_callback_query(call.id, "Нет доступа")
-            return
-        conn = sqlite3.connect('indyleader.db')
-        c = conn.cursor()
-        c.execute('SELECT username, first_name, last_seen, total_commands FROM users ORDER BY last_seen DESC LIMIT 20')
-        users = c.fetchall()
-        conn.close()
-        text = "👥 **Последние пользователи:**\n\n"
-        for u in users:
-            name = u[1] or u[0] or "Аноним"
-            text += f"• {name} — {u[3]} команд, последний раз: {u[2][:16]}\n"
-        bot.edit_message_text(
-            text[:4000],
-            call.message.chat.id,
-            call.message.message_id,
-            reply_markup=admin_panel(),
-            parse_mode="Markdown"
-        )
-        bot.answer_callback_query(call.id)
-        return
-
-    if call.data == "admin_commands":
-        if call.from_user.id not in ADMIN_IDS:
-            bot.answer_callback_query(call.id, "Нет доступа")
-            return
-        conn = sqlite3.connect('indyleader.db')
-        c = conn.cursor()
-        c.execute('''
-            SELECT command, COUNT(*) FROM stats
-            GROUP BY command ORDER BY COUNT(*) DESC
-        ''')
-        commands = c.fetchall()
-        conn.close()
-        text = "📈 **Статистика команд:**\n\n"
-        for cmd, count in commands:
-            text += f"• /{cmd} — {count} раз\n"
-        bot.edit_message_text(
-            text[:4000],
-            call.message.chat.id,
-            call.message.message_id,
-            reply_markup=admin_panel(),
-            parse_mode="Markdown"
-        )
-        bot.answer_callback_query(call.id)
-        return
-
-    # === НАЗАД ===
+    
+    user_id = call.from_user.id
+    
+    # === ГЛАВНОЕ МЕНЮ ===
     if call.data == "menu":
         try:
-            if call.message.text:
-                bot.edit_message_text(
-                    "🏁 **Главное меню**",
-                    call.message.chat.id,
-                    call.message.message_id,
-                    reply_markup=main_menu(),
-                    parse_mode="Markdown"
-                )
-            else:
-                bot.delete_message(call.message.chat.id, call.message.message_id)
-                bot.send_message(
-                    call.message.chat.id,
-                    "🏁 **Главное меню**",
-                    reply_markup=main_menu(),
-                    parse_mode="Markdown"
-                )
-        except Exception as e:
-            logger.error(f"Menu edit error: {e}")
-            try:
-                bot.delete_message(call.message.chat.id, call.message.message_id)
-            except:
-                pass
+            bot.edit_message_text(
+                "🏁 **Главное меню**",
+                call.message.chat.id,
+                call.message.message_id,
+                reply_markup=main_menu(),
+                parse_mode="Markdown"
+            )
+        except:
             bot.send_message(
                 call.message.chat.id,
                 "🏁 **Главное меню**",
@@ -334,315 +407,427 @@ def handle_callback(call):
             )
         bot.answer_callback_query(call.id)
         return
-
-    # === ТОП-5 И КАЛЕНДАРЬ ===
-    if call.data == "indycar":
-        log_command(call.from_user.id, 'indycar')
+    
+    # === КАЛЕНДАРЬ + ТОП ===
+    if call.data == "schedule_top":
+        log_command(user_id, 'schedule_top')
+        show_schedule_and_top(call)
+        return
+    
+    # === ПИЛОТЫ (список) ===
+    if call.data == "drivers_list":
+        log_command(user_id, 'drivers_list')
         try:
-            if call.message.text:
-                bot.edit_message_text(
-                    "⏳ Загрузка данных...",
-                    call.message.chat.id,
-                    call.message.message_id
-                )
-            else:
-                bot.delete_message(call.message.chat.id, call.message.message_id)
-                msg = bot.send_message(
-                    call.message.chat.id,
-                    "⏳ Загрузка данных..."
-                )
-                call.message.message_id = msg.message_id
-        except Exception as e:
-            logger.error(f"Loading edit error: {e}")
-        
-        try:
-            url_cal = "https://site.api.espn.com/apis/site/v2/sports/racing/irl/scoreboard"
-            resp = requests.get(url_cal, timeout=10)
-            resp.raise_for_status()
-            data = resp.json()
-
-            top5 = sorted(
-                [d for d in DRIVERS.values() if d.get("pos") and d["pos"] <= 5],
-                key=lambda x: x["pos"]
-            )
-
-            lines = ["🏁 **Топ-5 пилотов**", ""]
-            for d in top5:
-                lines.append(f"{d['pos']}. {d['name']} — {d['team']}")
-            lines.append("")
-
-            calendar = data.get('leagues', [{}])[0].get('calendar', [])
-            if calendar:
-                lines.append("📅 **Ближайшие гонки**")
-                for event in calendar[:3]:
-                    label = event.get('label', 'Неизвестно')
-                    start_date = event.get('startDate', '')
-                    date_str = start_date[:10] if start_date else ''
-                    lines.append(f"• {label} — {date_str}" if date_str else f"• {label}")
-            else:
-                lines.append("📅 Нет ближайших гонок")
-
             bot.edit_message_text(
-                "\n".join(lines),
+                "Выбери пилота:",
+                call.message.chat.id,
+                call.message.message_id,
+                reply_markup=drivers_list_buttons()
+            )
+        except:
+            bot.send_message(
+                call.message.chat.id,
+                "Выбери пилота:",
+                reply_markup=drivers_list_buttons()
+            )
+        bot.answer_callback_query(call.id)
+        return
+    
+    # === ИНФО О ПИЛОТЕ ===
+    if call.data.startswith("driver_"):
+        log_command(user_id, 'driver_info')
+        show_driver_info(call)
+        return
+    
+    # === МЕНЮ ИНДИ 500 ===
+    if call.data == "indy500_menu":
+        log_command(user_id, 'indy500_menu')
+        try:
+            bot.edit_message_text(
+                "🏆 **Indy 500**\n\nЧто хочешь узнать?",
+                call.message.chat.id,
+                call.message.message_id,
+                reply_markup=indy500_menu(),
+                parse_mode="Markdown"
+            )
+        except:
+            bot.send_message(
+                call.message.chat.id,
+                "🏆 **Indy 500**\n\nЧто хочешь узнать?",
+                reply_markup=indy500_menu(),
+                parse_mode="Markdown"
+            )
+        bot.answer_callback_query(call.id)
+        return
+    
+    # === ТОП-10 ПОБЕДИТЕЛЕЙ ===
+    if call.data == "top_winners":
+        log_command(user_id, 'top_winners')
+        show_top_winners(call)
+        return
+    
+    # === ЗАПРОС ГОДА (Indy 500) ===
+    if call.data == "winner_prompt":
+        log_command(user_id, 'winner_prompt')
+        set_state(user_id, "waiting_year")
+        try:
+            bot.edit_message_text(
+                "📅 **Введи год** (например, 2023):\n\n"
+                "Или напиши *назад*, чтобы вернуться",
+                call.message.chat.id,
+                call.message.message_id,
+                reply_markup=None,
+                parse_mode="Markdown"
+            )
+        except:
+            bot.send_message(
+                call.message.chat.id,
+                "📅 **Введи год** (например, 2023):\n\n"
+                "Или напиши *назад*, чтобы вернуться",
+                parse_mode="Markdown"
+            )
+        bot.answer_callback_query(call.id)
+        return
+    
+    # === СЛУЧАЙНЫЙ ПИЛОТ ===
+    if call.data == "random_driver":
+        log_command(user_id, 'random_driver')
+        show_random_driver(call)
+        return
+    
+    # === НИКО (задать вопрос) ===
+    if call.data == "ask_nico":
+        log_command(user_id, 'ask_nico')
+        set_state(user_id, "waiting_nico")
+        try:
+            bot.edit_message_text(
+                "🧠 **Нико**\n\nНапиши свой вопрос про IndyCar:",
+                call.message.chat.id,
+                call.message.message_id,
+                reply_markup=None
+            )
+        except:
+            bot.send_message(
+                call.message.chat.id,
+                "🧠 **Нико**\n\nНапиши свой вопрос про IndyCar:"
+            )
+        bot.answer_callback_query(call.id)
+        return
+    
+    # === НОВОСТИ ===
+    if call.data == "news":
+        log_command(user_id, 'news')
+        show_news(call)
+        return
+    
+    # === ДОНАТ ===
+    if call.data == "donate":
+        log_command(user_id, 'donate')
+        try:
+            bot.edit_message_text(
+                "❤️ **Поддержать проект**\n\n"
+                "💰 [DonationAlerts](https://www.donationalerts.com/r/kimi_redrace)",
                 call.message.chat.id,
                 call.message.message_id,
                 reply_markup=back_to_menu(),
-                parse_mode="Markdown"
+                parse_mode="Markdown",
+                disable_web_page_preview=True
             )
-        except Exception as e:
-            logger.error(f"ESPN error: {e}")
-            try:
-                bot.edit_message_text(
-                    "⚠️ Ошибка загрузки календаря. Попробуй позже.",
-                    call.message.chat.id,
-                    call.message.message_id,
-                    reply_markup=back_to_menu()
-                )
-            except Exception as e2:
-                logger.error(f"Error message edit error: {e2}")
-        
-        bot.answer_callback_query(call.id)
-        return
-
-    # === СПИСОК ГОНЩИКОВ ===
-    if call.data == "info_list":
-        log_command(call.from_user.id, 'info_list')
-        try:
-            if not DRIVERS:
-                if call.message.text:
-                    bot.edit_message_text(
-                        "⚠️ Нет данных о гонщиках",
-                        call.message.chat.id,
-                        call.message.message_id,
-                        reply_markup=back_to_menu()
-                    )
-                else:
-                    bot.delete_message(call.message.chat.id, call.message.message_id)
-                    bot.send_message(
-                        call.message.chat.id,
-                        "⚠️ Нет данных о гонщиках",
-                        reply_markup=back_to_menu()
-                    )
-            else:
-                if call.message.text:
-                    bot.edit_message_text(
-                        "Выбери гонщика:",
-                        call.message.chat.id,
-                        call.message.message_id,
-                        reply_markup=drivers_list()
-                    )
-                else:
-                    bot.delete_message(call.message.chat.id, call.message.message_id)
-                    bot.send_message(
-                        call.message.chat.id,
-                        "Выбери гонщика:",
-                        reply_markup=drivers_list()
-                    )
-        except Exception as e:
-            logger.error(f"Info list edit error: {e}")
-        bot.answer_callback_query(call.id)
-        return
-
-    # === ИНФА О ГОНЩИКЕ ===
-    if call.data.startswith("driver_"):
-        log_command(call.from_user.id, 'driver_info')
-        code = call.data.replace("driver_", "")
-        d = DRIVERS.get(code)
-        if not d:
-            bot.answer_callback_query(call.id, "Гонщик не найден")
-            return
-        
-        text = f"🏎️ **{d['name']}**\n🏁 {d['team']}\n🔢 #{d['number']}\n📊 {d.get('pos', '—')}"
-        
-        try:
-            bot.delete_message(call.message.chat.id, call.message.message_id)
-        except Exception as e:
-            logger.error(f"Delete message error: {e}")
-        
-        if d.get('image'):
-            try:
-                bot.send_photo(
-                    call.message.chat.id,
-                    d['image'],
-                    caption=text,
-                    reply_markup=back_to_menu(),
-                    parse_mode="Markdown"
-                )
-            except Exception as e:
-                logger.error(f"Send photo error: {e}")
-                bot.send_message(
-                    call.message.chat.id,
-                    text,
-                    reply_markup=back_to_menu(),
-                    parse_mode="Markdown"
-                )
-        else:
+        except:
             bot.send_message(
                 call.message.chat.id,
-                text,
+                "❤️ **Поддержать проект**\n\n"
+                "💰 [DonationAlerts](https://www.donationalerts.com/r/kimi_redrace)",
                 reply_markup=back_to_menu(),
-                parse_mode="Markdown"
+                parse_mode="Markdown",
+                disable_web_page_preview=True
             )
-        
         bot.answer_callback_query(call.id)
         return
-
-    # === ЗАПРОС ГОДА ===
-    if call.data == "winner_prompt":
-        log_command(call.from_user.id, 'winner_prompt')
+    
+    # === О ПРОЕКТЕ ===
+    if call.data == "about":
+        log_command(user_id, 'about')
         try:
-            if call.message.text:
-                bot.edit_message_text(
-                    "📅 **Введи год** (например, 2023):",
-                    call.message.chat.id,
-                    call.message.message_id,
-                    reply_markup=back_to_menu()
-                )
-            else:
-                bot.delete_message(call.message.chat.id, call.message.message_id)
-                bot.send_message(
-                    call.message.chat.id,
-                    "📅 **Введи год** (например, 2023):",
-                    reply_markup=back_to_menu()
-                )
-            bot.register_next_step_handler(call.message, handle_winner_year)
-        except Exception as e:
-            logger.error(f"Winner prompt edit error: {e}")
-        bot.answer_callback_query(call.id)
-        return
-
-    # === СЛУЧАЙНЫЙ ПИЛОТ ===
-    if call.data == "random_driver":
-        log_command(call.from_user.id, 'random_driver')
-        if not DRIVERS:
-            bot.send_message(
+            bot.edit_message_text(
+                "📘 **О проекте**\n\n"
+                "Неофициальный бот для фанатов IndyCar.\n"
+                "Не связан с IndyCar Series, LLC.\n\n"
+                "🔗 [GitHub](https://github.com/RedRaceTeam/I.N.D.Y-Leader)\n"
+                "🧑‍💻 @RedRaceF1, @Gabriella1488",
                 call.message.chat.id,
-                "⚠️ Нет данных о гонщиках",
-                reply_markup=back_to_menu()
-            )
-            bot.answer_callback_query(call.id)
-            return
-            
-        code, d = random.choice(list(DRIVERS.items()))
-        text = f"🎲 **{d['name']}**\n🏁 {d['team']}\n🔢 #{d['number']}"
-        
-        try:
-            bot.delete_message(call.message.chat.id, call.message.message_id)
-        except Exception as e:
-            logger.error(f"Delete message error: {e}")
-        
-        if d.get('image'):
-            try:
-                bot.send_photo(
-                    call.message.chat.id,
-                    d['image'],
-                    caption=text,
-                    reply_markup=back_to_menu(),
-                    parse_mode="Markdown"
-                )
-            except Exception as e:
-                logger.error(f"Random photo error: {e}")
-                bot.send_message(
-                    call.message.chat.id,
-                    text,
-                    reply_markup=back_to_menu(),
-                    parse_mode="Markdown"
-                )
-        else:
-            bot.send_message(
-                call.message.chat.id,
-                text,
+                call.message.message_id,
                 reply_markup=back_to_menu(),
-                parse_mode="Markdown"
+                parse_mode="Markdown",
+                disable_web_page_preview=True
             )
-        
+        except:
+            bot.send_message(
+                call.message.chat.id,
+                "📘 **О проекте**\n\n"
+                "Неофициальный бот для фанатов IndyCar.\n"
+                "Не связан с IndyCar Series, LLC.\n\n"
+                "🔗 [GitHub](https://github.com/RedRaceTeam/I.N.D.Y-Leader)\n"
+                "🧑‍💻 @RedRaceF1, @Gabriella1488",
+                reply_markup=back_to_menu(),
+                parse_mode="Markdown",
+                disable_web_page_preview=True
+            )
         bot.answer_callback_query(call.id)
         return
+    
+    # === АДМИН-ПАНЕЛЬ ===
+    if call.data in ["admin_stats", "admin_users", "admin_commands"]:
+        if user_id not in ADMIN_IDS:
+            bot.answer_callback_query(call.id, "Нет доступа")
+            return
+        handle_admin(call)
+        return
+    
+    # === NOOP ===
+    if call.data == "noop":
+        bot.answer_callback_query(call.id)
+        return
+    
+    bot.answer_callback_query(call.id, "Неизвестная команда")
 
-    # === ЗАДАТЬ ВОПРОС НИКО ===
-    if call.data == "ask_nico":
-        log_command(call.from_user.id, 'ask_nico')
+# ===== ОТДЕЛЬНЫЕ ФУНКЦИИ ДЛЯ ОБРАБОТЧИКОВ =====
+
+def show_schedule_and_top(call):
+    """Показывает календарь и топ-5"""
+    try:
+        # Отправляем заглушку
+        try:
+            bot.edit_message_text(
+                "⏳ Загружаю календарь...",
+                call.message.chat.id,
+                call.message.message_id
+            )
+        except:
+            pass
+        
+        # Получаем календарь
+        url = "https://site.api.espn.com/apis/site/v2/sports/racing/irl/scoreboard?seasontype=2&level=3"
+        resp = requests.get(url, timeout=10)
+        resp.raise_for_status()
+        data = resp.json()
+        
+        calendar = data.get('leagues', [{}])[0].get('calendar', [])
+        now = datetime.now(timezone.utc)
+        future_races = []
+        
+        for event in calendar:
+            start_date = event.get('startDate', '')
+            if not start_date:
+                continue
+            try:
+                clean_date = start_date.replace('Z', '+00:00')
+                event_date = datetime.fromisoformat(clean_date)
+                if event_date > now:
+                    label = event.get('label', 'Неизвестная гонка')
+                    future_races.append({
+                        'label': label,
+                        'date': event_date.strftime('%d.%m.%Y'),
+                        'timestamp': event_date
+                    })
+            except:
+                continue
+        
+        future_races.sort(key=lambda x: x['timestamp'])
+        future_races = future_races[:10]
+        
+        # Формируем ответ
+        lines = ["🏁 **БЛИЖАЙШИЕ ГОНКИ 2026**", ""]
+        if not future_races:
+            lines.append("🏁 Сезон завершен или календарь не загружен")
+        else:
+            for race in future_races:
+                lines.append(f"📅 {race['date']} — **{race['label']}**")
+        
+        # Топ-5
+        top5 = get_top5_from_espn()
+        if top5:
+            lines.extend(["", "🏆 **ТОП-5 ЧЕМПИОНАТА**", ""])
+            for i, line in enumerate(top5, 1):
+                lines.append(f"{i}. {line}")
+        
+        response_text = "\n".join(lines)
+        if len(response_text) > 4000:
+            response_text = response_text[:3997] + "..."
+        
         bot.edit_message_text(
-            "🧠 **Нико**\n\nЗадай свой вопрос про IndyCar:",
+            response_text,
+            call.message.chat.id,
+            call.message.message_id,
+            reply_markup=back_to_menu(),
+            parse_mode="Markdown"
+        )
+    except Exception as e:
+        logger.error(f"Schedule error: {e}")
+        bot.edit_message_text(
+            "⚠️ Ошибка загрузки календаря",
             call.message.chat.id,
             call.message.message_id,
             reply_markup=back_to_menu()
         )
-        bot.register_next_step_handler(call.message, handle_nico_question)
-        bot.answer_callback_query(call.id)
-        return
+    
+    bot.answer_callback_query(call.id)
 
-    # === ДОНАТ ===
-    if call.data == "donate":
-        log_command(call.from_user.id, 'donate')
+def show_driver_info(call):
+    """Показывает информацию о пилоте с фото"""
+    code = call.data.replace("driver_", "")
+    d = DRIVERS.get(code)
+    if not d:
+        bot.answer_callback_query(call.id, "Гонщик не найден")
+        return
+    
+    text = f"🏎️ **{d['name']}**\n🏁 {d['team']}\n🔢 #{d['number']}"
+    
+    if d.get('image'):
         try:
-            if call.message.text:
-                bot.edit_message_text(
-                    "❤️ **Поддержать проект**\n\n"
-                    "💰 DonationAlerts: [тык сюда](https://www.donationalerts.com/r/kimi_redrace)",
-                    call.message.chat.id,
-                    call.message.message_id,
-                    reply_markup=back_to_menu(),
-                    parse_mode="Markdown",
-                    disable_web_page_preview=True
-                )
-            else:
-                bot.delete_message(call.message.chat.id, call.message.message_id)
-                bot.send_message(
-                    call.message.chat.id,
-                    "❤️ **Поддержать проект**\n\n"
-                    "💰 DonationAlerts: [тык сюда](https://www.donationalerts.com/r/kimi_redrace)",
-                    reply_markup=back_to_menu(),
-                    parse_mode="Markdown",
-                    disable_web_page_preview=True
-                )
+            bot.edit_message_media(
+                media=InputMediaPhoto(d['image'], caption=text, parse_mode="Markdown"),
+                chat_id=call.message.chat.id,
+                message_id=call.message.message_id,
+                reply_markup=back_to_menu()
+            )
         except Exception as e:
-            logger.error(f"Donate edit error: {e}")
+            logger.error(f"Media edit error: {e}")
+            try:
+                bot.delete_message(call.message.chat.id, call.message.message_id)
+            except:
+                pass
+            bot.send_photo(
+                call.message.chat.id,
+                d['image'],
+                caption=text,
+                reply_markup=back_to_menu(),
+                parse_mode="Markdown"
+            )
+    else:
+        bot.edit_message_text(
+            text,
+            call.message.chat.id,
+            call.message.message_id,
+            reply_markup=back_to_menu(),
+            parse_mode="Markdown"
+        )
+    
+    bot.answer_callback_query(call.id)
+
+def show_top_winners(call):
+    """Показывает топ-10 победителей Indy 500"""
+    from collections import Counter
+    
+    wins = Counter()
+    for w in winners:
+        if w["year"] >= 1911 and "не проводилась" not in w["driver"]:
+            wins[w["driver"]] += 1
+    
+    top = wins.most_common(10)
+    medals = ["🥇", "🥈", "🥉", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣", "🔟"]
+    
+    text = "🏆 **10 ВЕЛИЧАЙШИХ ПОБЕДИТЕЛЕЙ**\n\n"
+    for i, (driver, count) in enumerate(top):
+        text += f"{medals[i]} {driver} — **{count}** побед\n"
+    
+    bot.edit_message_text(
+        text,
+        call.message.chat.id,
+        call.message.message_id,
+        reply_markup=back_to_menu(),
+        parse_mode="Markdown"
+    )
+    bot.answer_callback_query(call.id)
+
+def show_random_driver(call):
+    """Показывает случайного пилота"""
+    if not DRIVERS:
+        bot.send_message(
+            call.message.chat.id,
+            "⚠️ Нет данных о гонщиках",
+            reply_markup=back_to_menu()
+        )
         bot.answer_callback_query(call.id)
         return
-
-    # === О ПРОЕКТЕ ===
-    if call.data == "about":
-        log_command(call.from_user.id, 'about')
+    
+    code, d = random.choice(list(DRIVERS.items()))
+    text = f"🎲 **{d['name']}**\n🏁 {d['team']}\n🔢 #{d['number']}"
+    
+    if d.get('image'):
         try:
-            if call.message.text:
-                bot.edit_message_text(
-                    "📘 **О проекте**\n\n"
-                    "Неофициальный бот для фанатов IndyCar.\n"
-                    "Не связан с IndyCar Series, LLC.\n\n"
-                    "🔗 [GitHub](https://github.com/RedRaceTeam/I.N.D.Y-Leader)\n"
-                    "🧑‍💻 @RedRaceF1, @Gabriella1488",
-                    call.message.chat.id,
-                    call.message.message_id,
-                    reply_markup=back_to_menu(),
-                    parse_mode="Markdown",
-                    disable_web_page_preview=True
-                )
-            else:
-                bot.delete_message(call.message.chat.id, call.message.message_id)
-                bot.send_message(
-                    call.message.chat.id,
-                    "📘 **О проекте**\n\n"
-                    "Неофициальный бот для фанатов IndyCar.\n"
-                    "Не связан с IndyCar Series, LLC.\n\n"
-                    "🔗 [GitHub](https://github.com/RedRaceTeam/I.N.D.Y-Leader)\n"
-                    "🧑‍💻 @RedRaceF1, @Gabriella1488",
-                    reply_markup=back_to_menu(),
-                    parse_mode="Markdown",
-                    disable_web_page_preview=True
-                )
-        except Exception as e:
-            logger.error(f"About edit error: {e}")
-        bot.answer_callback_query(call.id)
-        return
+            bot.delete_message(call.message.chat.id, call.message.message_id)
+        except:
+            pass
+        bot.send_photo(
+            call.message.chat.id,
+            d['image'],
+            caption=text,
+            reply_markup=back_to_menu(),
+            parse_mode="Markdown"
+        )
+    else:
+        bot.edit_message_text(
+            text,
+            call.message.chat.id,
+            call.message.message_id,
+            reply_markup=back_to_menu(),
+            parse_mode="Markdown"
+        )
+    
+    bot.answer_callback_query(call.id)
 
-    bot.answer_callback_query(call.id, "Неизвестная команда")
+def show_news(call):
+    """Показывает новости IndyCar"""
+    try:
+        url = "https://site.api.espn.com/apis/site/v2/sports/racing/irl/news"
+        resp = requests.get(url, timeout=10)
+        data = resp.json()
+        articles = data.get('articles', [])[:5]
+        
+        if not articles:
+            bot.edit_message_text(
+                "📰 Новостей пока нет",
+                call.message.chat.id,
+                call.message.message_id,
+                reply_markup=back_to_menu()
+            )
+            bot.answer_callback_query(call.id)
+            return
+        
+        text = "📰 **НОВОСТИ INDYCAR**\n\n"
+        for article in articles:
+            headline = article.get('headline', 'Без заголовка')
+            description = article.get('description', '')[:150]
+            link = article.get('links', {}).get('web', {}).get('href', '#')
+            text += f"**{headline}**\n{description}...\n[Читать]({link})\n\n"
+        
+        if len(text) > 4000:
+            text = text[:3997] + "..."
+        
+        bot.edit_message_text(
+            text,
+            call.message.chat.id,
+            call.message.message_id,
+            reply_markup=back_to_menu(),
+            parse_mode="Markdown",
+            disable_web_page_preview=True
+        )
+    except Exception as e:
+        logger.error(f"News error: {e}")
+        bot.edit_message_text(
+            "⚠️ Новости временно недоступны",
+            call.message.chat.id,
+            call.message.message_id,
+            reply_markup=back_to_menu()
+        )
+    
+    bot.answer_callback_query(call.id)
 
-# ===== ОБРАБОТЧИК ВВОДА ГОДА =====
-def handle_winner_year(message):
-    if message.text.lower() in ["назад", "меню", "/start"]:
+def handle_winner_year_input(message, data):
+    """Обрабатывает ввод года для Indy 500"""
+    if message.text.lower() in ["назад", "меню"]:
         start(message)
-        bot.clear_step_handler(message)
         return
     
     try:
@@ -650,12 +835,12 @@ def handle_winner_year(message):
     except ValueError:
         bot.send_message(
             message.chat.id,
-            "❌ Это не год. Попробуй ещё раз.",
+            "❌ Это не год. Попробуй ещё раз или напиши *назад*",
+            parse_mode="Markdown",
             reply_markup=back_to_menu()
         )
-        bot.clear_step_handler(message)
         return
-
+    
     for entry in winners:
         if entry.get("year") == year:
             driver = entry.get("driver", "Неизвестно")
@@ -665,38 +850,89 @@ def handle_winner_year(message):
                 reply_markup=back_to_menu(),
                 parse_mode="Markdown"
             )
-            bot.clear_step_handler(message)
             return
-
+    
     bot.send_message(
         message.chat.id,
-        f"❌ Нет данных за {year}.",
+        f"❌ Нет данных за {year}.\n\nПопробуй другой год.",
         reply_markup=back_to_menu()
     )
-    bot.clear_step_handler(message)
 
-# ===== ОБРАБОТЧИК ВОПРОСА К НИКО =====
-def handle_nico_question(message):
-    if message.text.lower() in ["назад", "меню", "/start"]:
+def handle_nico_input(message, data):
+    """Обрабатывает вопрос к Нико"""
+    if message.text.lower() in ["назад", "меню"]:
         start(message)
-        bot.clear_step_handler(message)
         return
-
-    thinking_msg = bot.send_message(
-        message.chat.id,
-        "🧠 Нико думает..."
-    )
-
+    
+    bot.send_chat_action(message.chat.id, 'typing')
+    thinking = bot.send_message(message.chat.id, "🧠 Нико думает...")
+    
     response = ask_nico(message.text)
-
+    safe_response = escape_markdown(response)
+    
     bot.edit_message_text(
-        f"🧠 **Нико:**\n\n{response}",
-        thinking_msg.chat.id,
-        thinking_msg.message_id,
+        f"🧠 **Нико:**\n\n{safe_response}",
+        thinking.chat.id,
+        thinking.message_id,
         reply_markup=back_to_menu(),
         parse_mode="Markdown"
     )
-    bot.clear_step_handler(message)
+
+def handle_admin(call):
+    """Обрабатывает админ-команды"""
+    if call.data == "admin_stats":
+        total_users, total_commands, _ = get_stats()
+        text = f"📊 **Статистика**\n\n"
+        text += f"👤 Всего пользователей: {total_users}\n"
+        text += f"📝 Всего команд: {total_commands}"
+        bot.edit_message_text(
+            text,
+            call.message.chat.id,
+            call.message.message_id,
+            reply_markup=admin_panel(),
+            parse_mode="Markdown"
+        )
+    
+    elif call.data == "admin_users":
+        conn = sqlite3.connect('indyleader.db')
+        c = conn.cursor()
+        c.execute('SELECT username, first_name, last_seen, total_commands FROM users ORDER BY last_seen DESC LIMIT 20')
+        users = c.fetchall()
+        conn.close()
+        
+        text = "👥 **Последние пользователи:**\n\n"
+        for u in users:
+            name = u[1] or u[0] or "Аноним"
+            text += f"• {name} — {u[3]} команд, последний раз: {u[2][:16]}\n"
+        
+        bot.edit_message_text(
+            text[:4000],
+            call.message.chat.id,
+            call.message.message_id,
+            reply_markup=admin_panel(),
+            parse_mode="Markdown"
+        )
+    
+    elif call.data == "admin_commands":
+        conn = sqlite3.connect('indyleader.db')
+        c = conn.cursor()
+        c.execute('SELECT command, COUNT(*) FROM stats GROUP BY command ORDER BY COUNT(*) DESC')
+        commands = c.fetchall()
+        conn.close()
+        
+        text = "📈 **Статистика команд:**\n\n"
+        for cmd, count in commands:
+            text += f"• {cmd} — {count} раз\n"
+        
+        bot.edit_message_text(
+            text[:4000],
+            call.message.chat.id,
+            call.message.message_id,
+            reply_markup=admin_panel(),
+            parse_mode="Markdown"
+        )
+    
+    bot.answer_callback_query(call.id)
 
 # ===== ВЕБХУК =====
 @app.post("/webhook")
