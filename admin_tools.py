@@ -3,6 +3,7 @@ import threading
 import time
 import schedule
 import asyncio
+import requests
 from datetime import datetime, timedelta
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 
@@ -42,13 +43,13 @@ def get_user_stats(user_id):
         FROM users WHERE user_id = ?
     ''', (user_id,))
     user = c.fetchone()
-    
+
     c.execute('''
         SELECT command, COUNT(*) FROM stats WHERE user_id = ?
         GROUP BY command ORDER BY COUNT(*) DESC LIMIT 5
     ''', (user_id,))
     top_commands = c.fetchall()
-    
+
     conn.close()
     return user, top_commands
 
@@ -56,19 +57,19 @@ def get_global_stats():
     """Глобальная статистика"""
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
-    
+
     c.execute('SELECT COUNT(*) FROM users')
     total_users = c.fetchone()[0]
-    
+
     c.execute('SELECT COUNT(*) FROM stats')
     total_commands = c.fetchone()[0]
-    
+
     c.execute('''
         SELECT command, COUNT(*) FROM stats 
         GROUP BY command ORDER BY COUNT(*) DESC LIMIT 10
     ''')
     top_commands = c.fetchall()
-    
+
     c.execute('''
         SELECT DATE(timestamp) as day, COUNT(*) 
         FROM stats 
@@ -76,7 +77,7 @@ def get_global_stats():
         GROUP BY day
     ''')
     daily_activity = c.fetchall()
-    
+
     conn.close()
     return {
         'total_users': total_users,
@@ -85,12 +86,11 @@ def get_global_stats():
         'daily_activity': daily_activity
     }
 
-# ===== РАССЫЛКА =====
 def send_broadcast(bot, user_ids, message, parse_mode='Markdown'):
     """Отправляет рассылку с прогрессом"""
     success = 0
     failed = 0
-    
+
     for user_id in user_ids:
         try:
             bot.send_message(user_id, message, parse_mode=parse_mode)
@@ -98,43 +98,20 @@ def send_broadcast(bot, user_ids, message, parse_mode='Markdown'):
         except Exception as e:
             failed += 1
             print(f"Ошибка отправки {user_id}: {e}")
-        
-        # Задержка чтобы не упасть в лимиты
+
         time.sleep(0.05)
-    
+
     return success, failed
 
-# ===== ПАРСИНГ (автообновление базы) =====
 async def update_knowledge_base():
     """Обновляет базу знаний для RAG"""
-    from playwright.async_api import async_playwright
-    import json
-    
     print(f"[{datetime.now()}] Обновление базы знаний...")
-    
+
     try:
-        # Парсим календарь с IndyCar.com
-        async with async_playwright() as p:
-            browser = await p.chromium.launch(headless=True)
-            page = await browser.new_page()
-            await page.goto("https://www.indycar.com/Schedule", wait_until="networkidle")
-            
-            try:
-                await page.wait_for_selector(".schedule-item", timeout=5000)
-                races = await page.evaluate('''() => {
-                    return Array.from(document.querySelectorAll('.schedule-item')).map(el => ({
-                        date: el.querySelector('.date')?.innerText?.trim() || '',
-                        name: el.querySelector('.event-name')?.innerText?.trim() || '',
-                        location: el.querySelector('.location')?.innerText?.trim() || ''
-                    }));
-                }''')
-            except:
-                races = []
-            
-            await browser.close()
-        
+        import os
+        os.makedirs("data", exist_ok=True)
+
         # Парсим ESPN для турнирной таблицы
-        import requests
         standings = []
         try:
             resp = requests.get(
@@ -150,53 +127,41 @@ async def update_knowledge_base():
                 })
         except:
             pass
-        
+
         # Формируем файл базы знаний
         output = []
         output.append(f"# База знаний INDY Leader")
         output.append(f"# Обновлено: {datetime.now().isoformat()}")
         output.append("")
-        
-        if races:
-            output.append("## КАЛЕНДАРЬ ГОНОК 2026")
-            for race in races:
-                output.append(f"- {race['date']}: {race['name']} ({race['location']})")
-            output.append("")
-        
+
         if standings:
             output.append("## ТУРНИРНАЯ ТАБЛИЦА (ТОП-10)")
             for i, driver in enumerate(standings, 1):
                 output.append(f"{i}. {driver['name']} — {driver['points']} очков ({driver['team']})")
             output.append("")
-        
-        # Сохраняем
-        import os
-        os.makedirs("data", exist_ok=True)
+
         with open("data/knowledge.txt", "w", encoding="utf-8") as f:
             f.write("\n".join(output))
-        
-        print(f"✅ База знаний обновлена! Гонок: {len(races)}, Пилоты: {len(standings)}")
+
+        print(f"✅ База знаний обновлена! Пилоты: {len(standings)}")
         return True
     except Exception as e:
         print(f"❌ Ошибка обновления базы: {e}")
         return False
 
-# ===== АВТО-ОБНОВЛЕНИЕ ПО РАСПИСАНИЮ =====
 def start_auto_update():
     """Запускает автопарсинг каждые 6 часов"""
     schedule.every(6).hours.do(lambda: asyncio.run(update_knowledge_base()))
-    
+
     while True:
         schedule.run_pending()
         time.sleep(60)
 
-# ===== ТЕХНИЧЕСКАЯ ПОДДЕРЖКА =====
 def create_ticket(user_id, issue, contact):
     """Создает заявку в поддержку"""
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
-    
-    # Создаем таблицу заявок если нет
+
     c.execute('''
         CREATE TABLE IF NOT EXISTS tickets (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -207,12 +172,12 @@ def create_ticket(user_id, issue, contact):
             created_at TEXT
         )
     ''')
-    
+
     c.execute('''
         INSERT INTO tickets (user_id, issue, contact, created_at)
         VALUES (?, ?, ?, ?)
     ''', (user_id, issue, contact, datetime.now().isoformat()))
-    
+
     conn.commit()
     ticket_id = c.lastrowid
     conn.close()
@@ -237,4 +202,4 @@ def close_ticket(ticket_id):
     c = conn.cursor()
     c.execute('UPDATE tickets SET status = "closed" WHERE id = ?', (ticket_id,))
     conn.commit()
-    conn.close()
+    conn.close() 
