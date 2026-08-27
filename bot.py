@@ -5,9 +5,6 @@
 I.N.D.Y Leader v2.0 — адаптивный гид по IndyCar
 Архитектура: FastAPI + Webhook + ООП
 Автор: P4/9 · Gabriella Projects
-
-ВСЕ КОМАНДЫ НА КНОПКАХ!
-Оставлены только: /start, /admin, /switch, /help, /ticket
 """
 
 import os
@@ -35,12 +32,8 @@ from telebot.types import (
     InputMediaPhoto
 )
 
-# Импортируем админские функции
-from admin_tools import (
-    get_all_users, get_active_users, get_user_stats,
-    get_global_stats, send_broadcast, update_knowledge_base,
-    start_auto_update, create_ticket, get_open_tickets, close_ticket
-)
+# ===== ПЕРЕВОДЧИК (googletrans-modified) =====
+from googletrans import Translator as GoogleTranslator
 
 # ============================================
 # ИМПОРТ ДАННЫХ
@@ -81,8 +74,6 @@ logger.info(f"✅ Админы: {ADMIN_IDS}")
 # ============================================
 
 class Database:
-    """Класс для работы с SQLite"""
-
     def __init__(self, path: str = 'indyleader.db'):
         self.path = path
         self._init()
@@ -119,6 +110,17 @@ class Database:
                 state TEXT,
                 data TEXT,
                 updated_at TEXT
+            )
+        ''')
+
+        c.execute('''
+            CREATE TABLE IF NOT EXISTS tickets (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER,
+                issue TEXT,
+                contact TEXT,
+                status TEXT DEFAULT 'open',
+                created_at TEXT
             )
         ''')
 
@@ -242,9 +244,60 @@ class Database:
         conn.commit()
         conn.close()
 
+    def create_ticket(self, uid: int, issue: str, contact: str) -> int:
+        conn = sqlite3.connect(self.path)
+        c = conn.cursor()
+        c.execute('''
+            INSERT INTO tickets (user_id, issue, contact, created_at)
+            VALUES (?, ?, ?, ?)
+        ''', (uid, issue, contact, datetime.now().isoformat()))
+        conn.commit()
+        ticket_id = c.lastrowid
+        conn.close()
+        return ticket_id
+
+    def get_open_tickets(self) -> list:
+        conn = sqlite3.connect(self.path)
+        c = conn.cursor()
+        c.execute('''
+            SELECT id, user_id, issue, contact, created_at
+            FROM tickets WHERE status = 'open'
+            ORDER BY created_at DESC
+        ''')
+        rows = c.fetchall()
+        conn.close()
+        return rows
+
+    def close_ticket(self, ticket_id: int):
+        conn = sqlite3.connect(self.path)
+        c = conn.cursor()
+        c.execute('UPDATE tickets SET status = "closed" WHERE id = ?', (ticket_id,))
+        conn.commit()
+        conn.close()
+
 
 # ============================================
-# AI (НИКО)
+# ПЕРЕВОДЧИК
+# ============================================
+
+class Translator:
+    def __init__(self):
+        self.translator = GoogleTranslator()
+        logger.info("✅ Переводчик Google инициализирован")
+
+    def translate(self, text: str, dest: str = 'ru') -> str:
+        if not text:
+            return text
+        try:
+            result = self.translator.translate(text, dest=dest)
+            return result.text
+        except Exception as e:
+            logger.error(f"Translation error: {e}")
+            return text
+
+
+# ============================================
+# AI (НИКО) — только для ответов на вопросы
 # ============================================
 
 class NicoAI:
@@ -328,6 +381,9 @@ class NewsParser:
         'motorsport': 'https://www.motorsport.com/indycar/rss/',
     }
 
+    def __init__(self):
+        self.translator = Translator()
+
     async def fetch_all(self) -> list:
         all_news = []
 
@@ -366,6 +422,20 @@ class NewsParser:
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         return loop.run_until_complete(self.fetch_all())
+
+    def translate_news(self, articles: list) -> list:
+        translated = []
+        for article in articles:
+            try:
+                translated.append({
+                    'title': self.translator.translate(article['title']),
+                    'summary': self.translator.translate(article['summary']),
+                    'link': article['link'],
+                    'source': article['source']
+                })
+            except:
+                translated.append(article)
+        return translated
 
 
 # ============================================
@@ -429,22 +499,14 @@ class IndyBot:
         self._register_handlers()
         logger.info("✅ INDY Leader v2.0 готов к работе!")
 
-    # ============================================
-    # РЕГИСТРАЦИЯ ОБРАБОТЧИКОВ
-    # ============================================
-
     def _register_handlers(self):
-        # Команды (только основные)
         self.bot.message_handler(commands=['start'])(self.cmd_start)
         self.bot.message_handler(commands=['help'])(self.cmd_help)
         self.bot.message_handler(commands=['switch'])(self.cmd_switch)
         self.bot.message_handler(commands=['admin'])(self.cmd_admin)
         self.bot.message_handler(commands=['ticket'])(self.cmd_ticket)
 
-        # Кнопки
         self.bot.callback_query_handler(func=lambda c: True)(self._handle_callback)
-
-        # Текст
         self.bot.message_handler(func=lambda m: True)(self._handle_text)
 
     # ============================================
@@ -566,7 +628,6 @@ class IndyBot:
         data = call.data
         uid = call.from_user.id
 
-        # --- ВЫБОР УРОВНЯ ---
         if data == "level_novice":
             self.db.set_user_level(uid, 'novice')
             self.bot.edit_message_text(
@@ -591,13 +652,11 @@ class IndyBot:
             self.bot.answer_callback_query(call.id)
             return
 
-        # --- СМЕНА УРОВНЯ ---
         if data == "switch_level":
             self.cmd_switch(call.message)
             self.bot.answer_callback_query(call.id)
             return
 
-        # --- ГЛАВНОЕ МЕНЮ ---
         if data == "menu":
             self.bot.edit_message_text(
                 "🏁 **Главное меню**",
@@ -609,7 +668,6 @@ class IndyBot:
             self.bot.answer_callback_query(call.id)
             return
 
-        # --- АДМИНКА ---
         if data.startswith("admin_"):
             if uid not in self.admin_ids:
                 self.bot.answer_callback_query(call.id, "Нет доступа")
@@ -617,7 +675,6 @@ class IndyBot:
             self._handle_admin(call)
             return
 
-        # --- ПИЛОТЫ ---
         if data == "drivers_list":
             self._show_drivers_list(call)
             return
@@ -638,12 +695,10 @@ class IndyBot:
             self.bot.answer_callback_query(call.id)
             return
 
-        # --- КАЛЕНДАРЬ И ТОП ---
         if data == "schedule_top":
             self._show_schedule_and_top(call)
             return
 
-        # --- INDY 500 ---
         if data == "indy500_menu":
             self._show_indy500_menu(call)
             return
@@ -663,12 +718,10 @@ class IndyBot:
             self.bot.answer_callback_query(call.id)
             return
 
-        # --- НОВОСТИ ---
         if data == "news":
             self._show_news(call)
             return
 
-        # --- НИКО ---
         if data == "ask_nico":
             self.db.set_state(uid, "waiting_nico")
             self.bot.edit_message_text(
@@ -680,7 +733,6 @@ class IndyBot:
             self.bot.answer_callback_query(call.id)
             return
 
-        # --- ГАЙД ---
         if data == "guide_intro":
             self._show_guide(call)
             return
@@ -693,7 +745,6 @@ class IndyBot:
             self._show_tracks(call)
             return
 
-        # --- ДОНАТ ---
         if data == "donate":
             self.bot.edit_message_text(
                 "❤️ **Поддержать проект**\n\n"
@@ -707,7 +758,6 @@ class IndyBot:
             self.bot.answer_callback_query(call.id)
             return
 
-        # --- О ПРОЕКТЕ ---
         if data == "about":
             self.bot.edit_message_text(
                 "📘 **О проекте**\n\n"
@@ -724,7 +774,6 @@ class IndyBot:
             self.bot.answer_callback_query(call.id)
             return
 
-        # --- НЕИЗВЕСТНАЯ КНОПКА ---
         self.bot.answer_callback_query(call.id, "Неизвестная команда")
 
     # ============================================
@@ -751,6 +800,9 @@ class IndyBot:
             self.db.clear_state(uid)
         elif state == "waiting_ticket":
             self._handle_ticket_input(m)
+            self.db.clear_state(uid)
+        elif state == "waiting_broadcast":
+            self._handle_broadcast_input(m)
             self.db.clear_state(uid)
         else:
             self.bot.send_message(
@@ -904,7 +956,6 @@ class IndyBot:
                 for race in future_races:
                     lines.append(f"📅 {race['date']} — **{race['label']}**")
 
-            # Топ-5
             top5 = StandingsFetcher.fetch()
             if top5:
                 lines.extend(["", "🏆 **Топ-5 чемпионата**", ""])
@@ -986,8 +1037,11 @@ class IndyBot:
             self.bot.answer_callback_query(call.id)
             return
 
-        # Отправляем первую новость
-        article = articles[0]
+        # Переводим новости
+        translated = self.news_parser.translate_news(articles)
+
+        # Показываем первую
+        article = translated[0]
         text = f"📰 **{article['title']}**\n\n{article['summary']}...\n\n[Читать]({article['link']})"
         self.bot.edit_message_text(
             text,
@@ -998,8 +1052,8 @@ class IndyBot:
             disable_web_page_preview=True
         )
 
-        # Сохраняем статьи в состояние
-        self.db.set_state(call.from_user.id, "news_view", str(articles))
+        # Сохраняем все статьи в состояние
+        self.db.set_state(call.from_user.id, "news_view", str(translated))
         self.bot.answer_callback_query(call.id)
 
     def _handle_year_input(self, m: Message):
@@ -1050,7 +1104,7 @@ class IndyBot:
             issue = m.text
             contact = m.from_user.username or "Не указан"
 
-        ticket_id = create_ticket(m.from_user.id, issue, contact)
+        ticket_id = self.db.create_ticket(m.from_user.id, issue, contact)
 
         self.bot.send_message(
             m.chat.id,
@@ -1058,7 +1112,7 @@ class IndyBot:
             reply_markup=IKM().add(IKB("🔙 В меню", callback_data="menu"))
         )
 
-        for admin_id in ADMIN_IDS:
+        for admin_id in self.admin_ids:
             try:
                 self.bot.send_message(
                     admin_id,
@@ -1069,6 +1123,52 @@ class IndyBot:
                 )
             except:
                 pass
+
+    def _handle_broadcast_input(self, m: Message):
+        try:
+            parts = m.text.split('|', 1)
+            target = parts[0].strip().lower()
+            text = parts[1].strip()
+        except:
+            self.bot.send_message(
+                m.chat.id,
+                "❌ Неверный формат. Используй: `all | текст`"
+            )
+            return
+
+        if target == "all":
+            users = self.db.get_all_users()
+        elif target == "active":
+            users = self.db.get_active_users(7)
+        else:
+            try:
+                users = [int(x.strip()) for x in target.split(',')]
+            except:
+                self.bot.send_message(
+                    m.chat.id,
+                    "❌ Неверный формат ID. Используй: `12345,67890,11111 | текст`"
+                )
+                return
+
+        if not users:
+            self.bot.send_message(m.chat.id, "⚠️ Нет пользователей для рассылки")
+            return
+
+        success = 0
+        failed = 0
+        for uid in users:
+            try:
+                self.bot.send_message(uid, text, parse_mode="Markdown")
+                success += 1
+                time.sleep(0.05)
+            except:
+                failed += 1
+
+        self.bot.send_message(
+            m.chat.id,
+            f"📨 **Рассылка завершена**\n\n✅ Успешно: {success}\n❌ Ошибок: {failed}",
+            reply_markup=IKM().add(IKB("🔙 Назад", callback_data="menu"))
+        )
 
     def _show_guide(self, call: CallbackQuery):
         text = (
@@ -1160,12 +1260,13 @@ class IndyBot:
         data = call.data
 
         if data == "admin_stats":
-            stats = get_global_stats()
+            stats = self.db.get_stats()
+            commands = self.db.get_command_stats()
             text = f"📊 **Глобальная статистика**\n\n"
-            text += f"👤 Пользователей: {stats['total_users']}\n"
-            text += f"📝 Команд: {stats['total_commands']}\n\n"
+            text += f"👤 Пользователей: {stats['users']}\n"
+            text += f"📝 Команд: {stats['commands']}\n\n"
             text += "**Топ-5 команд:**\n"
-            for cmd, count in stats['top_commands'][:5]:
+            for cmd, count in commands[:5]:
                 text += f"• {cmd} — {count}\n"
 
             self.bot.edit_message_text(
@@ -1179,10 +1280,10 @@ class IndyBot:
             return
 
         if data == "admin_users":
-            users = get_all_users()
+            users = self.db.get_all_users()
             text = f"👥 **Все пользователи ({len(users)})**\n\n"
-            text += f"Активных за 7 дней: {len(get_active_users(7))}\n"
-            text += f"Активных за 30 дней: {len(get_active_users(30))}\n\n"
+            text += f"Активных за 7 дней: {len(self.db.get_active_users(7))}\n"
+            text += f"Активных за 30 дней: {len(self.db.get_active_users(30))}\n\n"
             text += "Последние 10 ID:\n"
             for uid in users[-10:]:
                 text += f"• `{uid}`\n"
@@ -1214,7 +1315,7 @@ class IndyBot:
             return
 
         if data == "admin_tickets":
-            tickets = get_open_tickets()
+            tickets = self.db.get_open_tickets()
             if not tickets:
                 text = "🎫 **Открытых заявок нет**"
             else:
@@ -1256,13 +1357,42 @@ class IndyBot:
                 call.message.chat.id,
                 call.message.id
             )
-            asyncio.run(update_knowledge_base())
-            self.bot.edit_message_text(
-                "✅ База знаний обновлена!",
-                call.message.chat.id,
-                call.message.id,
-                reply_markup=self._admin_back()
-            )
+            try:
+                import requests
+                resp = requests.get(
+                    "https://site.api.espn.com/apis/site/v2/sports/racing/irl/standings",
+                    timeout=10
+                )
+                data = resp.json()
+                standings = []
+                for entry in data.get('standings', [{}])[0].get('entries', [])[:10]:
+                    standings.append({
+                        'name': entry.get('athlete', {}).get('displayName', 'Unknown'),
+                        'points': entry.get('points', 0),
+                        'team': entry.get('team', {}).get('displayName', '')
+                    })
+
+                os.makedirs("data", exist_ok=True)
+                with open("data/knowledge.txt", "w", encoding="utf-8") as f:
+                    f.write(f"# База знаний INDY Leader\n")
+                    f.write(f"# Обновлено: {datetime.now().isoformat()}\n\n")
+                    f.write("## ТУРНИРНАЯ ТАБЛИЦА (ТОП-10)\n")
+                    for i, driver in enumerate(standings, 1):
+                        f.write(f"{i}. {driver['name']} — {driver['points']} очков ({driver['team']})\n")
+
+                self.bot.edit_message_text(
+                    "✅ База знаний обновлена!",
+                    call.message.chat.id,
+                    call.message.id,
+                    reply_markup=self._admin_back()
+                )
+            except Exception as e:
+                self.bot.edit_message_text(
+                    f"❌ Ошибка: {e}",
+                    call.message.chat.id,
+                    call.message.id,
+                    reply_markup=self._admin_back()
+                )
             self.bot.answer_callback_query(call.id)
             return
 
@@ -1340,10 +1470,5 @@ def set_webhook():
 
 if __name__ == "__main__":
     import uvicorn
-
-    # Запускаем автопарсинг
-    threading.Thread(target=start_auto_update, daemon=True).start()
-    logger.info("🔄 Автопарсинг запущен")
-
     set_webhook()
     uvicorn.run(app, host="0.0.0.0", port=PORT)
