@@ -5,6 +5,8 @@
 I.N.D.Y Leader v2.0 — адаптивный гид по IndyCar
 Архитектура: FastAPI + Webhook + ООП
 Автор: P4/9 · Gabriella Projects
+
+ЛОГИКА: при нажатии кнопки — удаляем старое сообщение и отправляем новое
 """
 
 import os
@@ -28,11 +30,10 @@ from fastapi import FastAPI, Request, Response
 from telebot.types import (
     Message, CallbackQuery,
     InlineKeyboardMarkup as IKM,
-    InlineKeyboardButton as IKB,
-    InputMediaPhoto
+    InlineKeyboardButton as IKB
 )
 
-# ===== ПЕРЕВОДЧИК (googletrans-modified) =====
+# ===== ПЕРЕВОДЧИК =====
 from googletrans import Translator as GoogleTranslator
 
 # ============================================
@@ -621,52 +622,40 @@ class IndyBot:
         self.db.set_state(m.from_user.id, "waiting_ticket")
 
     # ============================================
-    # ОБРАБОТЧИК КНОПОК (ФИКС: answer_callback_query)
+    # ОБРАБОТЧИК КНОПОК (НОВАЯ ЛОГИКА)
     # ============================================
 
     def _handle_callback(self, call: CallbackQuery):
-        # ВСЕГДА отвечаем на callback
+        # Всегда отвечаем на callback
         self.bot.answer_callback_query(call.id)
         
         data = call.data
         uid = call.from_user.id
+        chat_id = call.message.chat.id
+        msg_id = call.message.message_id
 
+        # ===== ВЫБОР УРОВНЯ =====
         if data == "level_novice":
             self.db.set_user_level(uid, 'novice')
-            self.bot.edit_message_text(
-                "🟢 **Уровень: Новичок**",
-                call.message.chat.id,
-                call.message.id,
-                reply_markup=self._main_menu(uid),
-                parse_mode="Markdown"
-            )
+            self._delete_and_send(chat_id, msg_id, "🟢 **Уровень: Новичок**", self._main_menu(uid))
             return
 
         if data == "level_pro":
             self.db.set_user_level(uid, 'pro')
-            self.bot.edit_message_text(
-                "🔴 **Уровень: Продвинутый**",
-                call.message.chat.id,
-                call.message.id,
-                reply_markup=self._main_menu(uid),
-                parse_mode="Markdown"
-            )
+            self._delete_and_send(chat_id, msg_id, "🔴 **Уровень: Продвинутый**", self._main_menu(uid))
             return
 
+        # ===== СМЕНА УРОВНЯ =====
         if data == "switch_level":
             self.cmd_switch(call.message)
             return
 
+        # ===== ГЛАВНОЕ МЕНЮ =====
         if data == "menu":
-            self.bot.edit_message_text(
-                "🏁 **Главное меню**",
-                call.message.chat.id,
-                call.message.id,
-                reply_markup=self._main_menu(uid),
-                parse_mode="Markdown"
-            )
+            self._delete_and_send(chat_id, msg_id, "🏁 **Главное меню**", self._main_menu(uid))
             return
 
+        # ===== АДМИНКА =====
         if data.startswith("admin_"):
             if uid not in self.admin_ids:
                 self.bot.answer_callback_query(call.id, "Нет доступа")
@@ -674,139 +663,222 @@ class IndyBot:
             self._handle_admin(call)
             return
 
+        # ===== ПИЛОТЫ =====
         if data == "drivers_list":
-            self._show_drivers_list(call)
+            self._delete_and_send(chat_id, msg_id, "🏎️ **Выбери пилота**", self._drivers_menu())
             return
 
         if data == "driver_random":
             code, driver = random.choice(list(DRIVERS.items()))
-            self._send_driver(call.message.chat.id, driver)
+            self._delete_and_send_driver(chat_id, msg_id, driver)
             return
 
         if data.startswith("driver_"):
             code = data.replace("driver_", "")
             driver = DRIVERS.get(code)
             if driver:
-                self._send_driver(call.message.chat.id, driver)
+                self._delete_and_send_driver(chat_id, msg_id, driver)
             else:
                 self.bot.answer_callback_query(call.id, "Пилот не найден")
             return
 
+        # ===== КАЛЕНДАРЬ =====
         if data == "schedule_top":
-            self._show_schedule_and_top(call)
+            self._delete_and_send(chat_id, msg_id, "⏳ Загружаю календарь...", None)
+            self._show_schedule_and_top(chat_id)
             return
 
+        # ===== INDY 500 =====
         if data == "indy500_menu":
-            self._show_indy500_menu(call)
+            markup = IKM(row_width=2)
+            markup.add(
+                IKB("📅 По году", callback_data="winner_prompt"),
+                IKB("🏆 Топ-10 победителей", callback_data="top_winners")
+            )
+            markup.add(IKB("🔙 Назад", callback_data="menu"))
+            self._delete_and_send(chat_id, msg_id, "🏆 **Indy 500**\n\nЧто хочешь узнать?", markup)
             return
 
         if data == "top_winners":
-            self._show_top_winners(call)
+            self._delete_and_send(chat_id, msg_id, "🏆 **10 величайших победителей**\n\n" + self._get_top_winners_text(), self._indy500_back())
             return
 
         if data == "winner_prompt":
             self.db.set_state(uid, "waiting_year")
-            self.bot.edit_message_text(
-                "📅 **Введи год** (например, 2023):",
-                call.message.chat.id,
-                call.message.id,
-                reply_markup=IKM().add(IKB("🔙 Назад", callback_data="menu"))
-            )
+            self._delete_and_send(chat_id, msg_id, "📅 **Введи год** (например, 2023):", IKM().add(IKB("🔙 Назад", callback_data="indy500_menu")))
             return
 
+        # ===== НОВОСТИ =====
         if data == "news":
-            self._show_news(call)
+            self._delete_and_send(chat_id, msg_id, "📰 Собираю новости...", None)
+            self._show_news(chat_id)
             return
 
+        # ===== НИКО =====
         if data == "ask_nico":
             self.db.set_state(uid, "waiting_nico")
-            self.bot.edit_message_text(
-                "🧠 **Нико**\n\nНапиши свой вопрос про IndyCar:",
-                call.message.chat.id,
-                call.message.id,
-                reply_markup=IKM().add(IKB("🔙 Назад", callback_data="menu"))
-            )
+            self._delete_and_send(chat_id, msg_id, "🧠 **Нико**\n\nНапиши свой вопрос про IndyCar:", IKM().add(IKB("🔙 Назад", callback_data="menu")))
             return
 
+        # ===== ГАЙД =====
         if data == "guide_intro":
-            self._show_guide(call)
+            markup = IKM(row_width=2)
+            markup.add(
+                IKB("📋 Правила", callback_data="guide_rules"),
+                IKB("🏁 Трассы", callback_data="guide_tracks")
+            )
+            markup.add(IKB("🔙 Назад", callback_data="menu"))
+            text = (
+                "📖 **Что такое IndyCar?**\n\n"
+                "IndyCar — американская серия гонок на открытых колесах.\n\n"
+                "**Особенности:**\n"
+                "🏁 Овальные трассы (США)\n"
+                "🚗 Болиды до 700 л.с.\n"
+                "🏆 Indy 500 — главная гонка\n"
+                "🌍 Пилоты из 10+ стран\n\n"
+                "**Как устроен чемпионат:**\n"
+                "• 17 этапов\n"
+                "• 7 типов трасс\n"
+                "• Очки топ-10\n"
+                "• Победитель по итогам сезона"
+            )
+            self._delete_and_send(chat_id, msg_id, text, markup)
             return
 
         if data == "guide_rules":
-            self._show_rules(call)
+            text = (
+                "📋 **Правила IndyCar**\n\n"
+                "**Очки:**\n"
+                "1 место — 50\n"
+                "2 место — 40\n"
+                "3 место — 35\n"
+                "...\n"
+                "10 место — 10\n"
+                "+1 за поул\n"
+                "+1 за быстрый круг\n\n"
+                "**Штрафы:**\n"
+                "• Превышение на пит-лейн\n"
+                "• Блокировка\n"
+                "• Нарушение флагов"
+            )
+            self._delete_and_send(chat_id, msg_id, text, IKM().add(IKB("🔙 Назад", callback_data="guide_intro")))
             return
 
         if data == "guide_tracks":
-            self._show_tracks(call)
-            return
-
-        if data == "donate":
-            self.bot.edit_message_text(
-                "❤️ **Поддержать проект**\n\n"
-                "💰 [DonationAlerts](https://www.donationalerts.com/r/kimi_redrace)",
-                call.message.chat.id,
-                call.message.id,
-                reply_markup=IKM().add(IKB("🔙 Назад", callback_data="menu")),
-                parse_mode="Markdown",
-                disable_web_page_preview=True
+            text = (
+                "🏁 **Трассы IndyCar**\n\n"
+                "🏟️ **Овалы** (7 этапов)\n"
+                "• Indianapolis (2.5 мили)\n"
+                "• Texas (1.5 мили)\n\n"
+                "🔄 **Шоссейные** (5 этапов)\n"
+                "• Road America (4 мили)\n"
+                "• Mid-Ohio (2.25 мили)\n\n"
+                "🏙️ **Уличные** (5 этапов)\n"
+                "• St. Petersburg (1.8 мили)\n"
+                "• Long Beach (1.97 мили)\n\n"
+                "🏆 **Indy 500** — главная гонка"
             )
+            self._delete_and_send(chat_id, msg_id, text, IKM().add(IKB("🔙 Назад", callback_data="guide_intro")))
             return
 
+        # ===== ДОНАТ =====
+        if data == "donate":
+            text = "❤️ **Поддержать проект**\n\n💰 [DonationAlerts](https://www.donationalerts.com/r/kimi_redrace)"
+            self._delete_and_send(chat_id, msg_id, text, IKM().add(IKB("🔙 Назад", callback_data="menu")), disable_web_page_preview=True)
+            return
+
+        # ===== О ПРОЕКТЕ =====
         if data == "about":
-            self.bot.edit_message_text(
+            text = (
                 "📘 **О проекте**\n\n"
                 "Неофициальный бот для фанатов IndyCar.\n"
                 "Не связан с IndyCar Series, LLC.\n\n"
                 "🔗 [GitHub](https://github.com/RedRaceTeam/I.N.D.Y-Leader)\n"
-                "🧑‍💻 @Gabriella1488, @Scanialove",
-                call.message.chat.id,
-                call.message.id,
-                reply_markup=IKM().add(IKB("🔙 Назад", callback_data="menu")),
-                parse_mode="Markdown",
-                disable_web_page_preview=True
+                "🧑‍💻 @Gabriella1488, @Scanialove"
             )
+            self._delete_and_send(chat_id, msg_id, text, IKM().add(IKB("🔙 Назад", callback_data="menu")), disable_web_page_preview=True)
             return
 
+        # ===== НЕИЗВЕСТНАЯ КНОПКА =====
         self.bot.answer_callback_query(call.id, "Неизвестная команда")
 
     # ============================================
-    # ОБРАБОТЧИК ТЕКСТА
+    # ВСПОМОГАТЕЛЬНЫЕ МЕТОДЫ
     # ============================================
 
-    def _handle_text(self, m: Message):
-        uid = m.from_user.id
-        state, data = self.db.get_state(uid)
+    def _delete_and_send(self, chat_id: int, msg_id: int, text: str, markup: Optional[IKM] = None, **kwargs):
+        """Удаляет старое сообщение и отправляет новое"""
+        try:
+            self.bot.delete_message(chat_id, msg_id)
+        except:
+            pass
+        
+        self.bot.send_message(
+            chat_id,
+            text,
+            reply_markup=markup,
+            parse_mode="Markdown",
+            **kwargs
+        )
 
-        if not state:
-            self.bot.send_message(
-                m.chat.id,
-                "Используй кнопки в меню 👇",
-                reply_markup=self._main_menu(uid)
-            )
-            return
+    def _delete_and_send_driver(self, chat_id: int, msg_id: int, driver: Dict):
+        """Удаляет старое сообщение и отправляет карточку пилота"""
+        try:
+            self.bot.delete_message(chat_id, msg_id)
+        except:
+            pass
+        
+        self._send_driver(chat_id, driver)
 
-        if state == "waiting_year":
-            self._handle_year_input(m)
-            self.db.clear_state(uid)
-        elif state == "waiting_nico":
-            self._handle_nico_input(m)
-            self.db.clear_state(uid)
-        elif state == "waiting_ticket":
-            self._handle_ticket_input(m)
-            self.db.clear_state(uid)
-        elif state == "waiting_broadcast":
-            self._handle_broadcast_input(m)
-            self.db.clear_state(uid)
-        else:
-            self.bot.send_message(
-                m.chat.id,
-                "Используй кнопки в меню 👇",
-                reply_markup=self._main_menu(uid)
-            )
+    def _send_driver(self, chat_id: int, driver: Dict):
+        text = f"🏎️ **{driver['name']}**\n🏁 {driver['team']}\n🔢 #{driver['number']}"
+        if driver.get('pos'):
+            text += f"\n📊 Позиция: {driver['pos']}"
 
-    # ============================================
-    # МЕНЮ
-    # ============================================
+        markup = IKM().add(IKB("🔙 Назад", callback_data="drivers_list"))
+
+        if driver.get('image'):
+            try:
+                self.bot.send_photo(
+                    chat_id,
+                    driver['image'],
+                    caption=text,
+                    parse_mode="Markdown",
+                    reply_markup=markup
+                )
+                return
+            except Exception as e:
+                logger.error(f"Photo send error: {e}")
+
+        self.bot.send_message(chat_id, text, parse_mode="Markdown", reply_markup=markup)
+
+    def _drivers_menu(self) -> IKM:
+        markup = IKM(row_width=2)
+        teams = {}
+        for code, d in DRIVERS.items():
+            if d['team'] not in teams:
+                teams[d['team']] = []
+            teams[d['team']].append((code, d))
+
+        for team, drivers in sorted(teams.items())[:8]:
+            markup.add(IKB(f"━━ {team} ━━", callback_data="noop"))
+            row = []
+            for code, d in drivers[:4]:
+                surname = d['name'].split()[-1]
+                row.append(IKB(f"{surname} #{d['number']}", callback_data=f"driver_{code}"))
+                if len(row) == 2:
+                    markup.add(*row)
+                    row = []
+            if row:
+                markup.add(*row)
+
+        markup.add(IKB("🔙 Назад", callback_data="menu"))
+        return markup
+
+    def _indy500_back(self) -> IKM:
+        markup = IKM()
+        markup.add(IKB("🔙 Назад", callback_data="indy500_menu"))
+        return markup
 
     def _main_menu(self, uid: int) -> IKM:
         level = self.db.get_user_level(uid)
@@ -859,70 +931,21 @@ class IndyBot:
         )
         return markup
 
-    # ============================================
-    # ВСПОМОГАТЕЛЬНЫЕ МЕТОДЫ (ФИКС: photo без edit)
-    # ============================================
+    def _get_top_winners_text(self) -> str:
+        wins = Counter()
+        for w in WINNERS:
+            if w['year'] >= 1911 and 'не проводилась' not in w['driver']:
+                wins[w['driver']] += 1
 
-    def _send_driver(self, chat_id: int, driver: Dict):
-        text = f"🏎️ **{driver['name']}**\n🏁 {driver['team']}\n🔢 #{driver['number']}"
-        if driver.get('pos'):
-            text += f"\n📊 Позиция: {driver['pos']}"
+        top = wins.most_common(10)
+        medals = ['🥇', '🥈', '🥉', '4️⃣', '5️⃣', '6️⃣', '7️⃣', '8️⃣', '9️⃣', '🔟']
 
-        markup = IKM().add(IKB("🔙 Назад", callback_data="drivers_list"))
+        text = ""
+        for i, (driver, count) in enumerate(top):
+            text += f"{medals[i]} {driver} — **{count}** побед\n"
+        return text
 
-        if driver.get('image'):
-            try:
-                # Отправляем НОВОЕ сообщение с фото
-                self.bot.send_photo(
-                    chat_id,
-                    driver['image'],
-                    caption=text,
-                    parse_mode="Markdown",
-                    reply_markup=markup
-                )
-                return
-            except Exception as e:
-                logger.error(f"Photo send error: {e}")
-
-        # Если фото нет или ошибка — текстом
-        self.bot.send_message(chat_id, text, parse_mode="Markdown", reply_markup=markup)
-
-    def _show_drivers_list(self, call: CallbackQuery):
-        markup = IKM(row_width=2)
-        teams = {}
-        for code, d in DRIVERS.items():
-            if d['team'] not in teams:
-                teams[d['team']] = []
-            teams[d['team']].append((code, d))
-
-        for team, drivers in sorted(teams.items())[:8]:
-            markup.add(IKB(f"━━ {team} ━━", callback_data="noop"))
-            row = []
-            for code, d in drivers[:4]:
-                surname = d['name'].split()[-1]
-                row.append(IKB(f"{surname} #{d['number']}", callback_data=f"driver_{code}"))
-                if len(row) == 2:
-                    markup.add(*row)
-                    row = []
-            if row:
-                markup.add(*row)
-
-        markup.add(IKB("🔙 Назад", callback_data="menu"))
-        self.bot.edit_message_text(
-            "🏎️ **Выбери пилота**",
-            call.message.chat.id,
-            call.message.id,
-            reply_markup=markup,
-            parse_mode="Markdown"
-        )
-
-    def _show_schedule_and_top(self, call: CallbackQuery):
-        self.bot.edit_message_text(
-            "⏳ Загружаю календарь...",
-            call.message.chat.id,
-            call.message.id
-        )
-
+    def _show_schedule_and_top(self, chat_id: int):
         try:
             url = "https://site.api.espn.com/apis/site/v2/sports/racing/irl/scoreboard?seasontype=2&level=3"
             resp = requests.get(url, timeout=10)
@@ -962,72 +985,26 @@ class IndyBot:
                 for i, d in enumerate(top5, 1):
                     lines.append(f"{i}. {d['name']} — {d['points']} очков")
 
-            self.bot.edit_message_text(
+            self.bot.send_message(
+                chat_id,
                 "\n".join(lines),
-                call.message.chat.id,
-                call.message.id,
                 reply_markup=IKM().add(IKB("🔙 Назад", callback_data="menu")),
                 parse_mode="Markdown"
             )
         except Exception as e:
             logger.error(f"Schedule error: {e}")
-            self.bot.edit_message_text(
+            self.bot.send_message(
+                chat_id,
                 "⚠️ Ошибка загрузки календаря",
-                call.message.chat.id,
-                call.message.id,
                 reply_markup=IKM().add(IKB("🔙 Назад", callback_data="menu"))
             )
 
-    def _show_indy500_menu(self, call: CallbackQuery):
-        markup = IKM(row_width=2)
-        markup.add(
-            IKB("📅 По году", callback_data="winner_prompt"),
-            IKB("🏆 Топ-10 победителей", callback_data="top_winners")
-        )
-        markup.add(IKB("🔙 Назад", callback_data="menu"))
-
-        self.bot.edit_message_text(
-            "🏆 **Indy 500**\n\nЧто хочешь узнать?",
-            call.message.chat.id,
-            call.message.id,
-            reply_markup=markup,
-            parse_mode="Markdown"
-        )
-
-    def _show_top_winners(self, call: CallbackQuery):
-        wins = Counter()
-        for w in WINNERS:
-            if w['year'] >= 1911 and 'не проводилась' not in w['driver']:
-                wins[w['driver']] += 1
-
-        top = wins.most_common(10)
-        medals = ['🥇', '🥈', '🥉', '4️⃣', '5️⃣', '6️⃣', '7️⃣', '8️⃣', '9️⃣', '🔟']
-
-        text = "🏆 **10 величайших победителей**\n\n"
-        for i, (driver, count) in enumerate(top):
-            text += f"{medals[i]} {driver} — **{count}** побед\n"
-
-        self.bot.edit_message_text(
-            text,
-            call.message.chat.id,
-            call.message.id,
-            reply_markup=IKM().add(IKB("🔙 Назад", callback_data="indy500_menu")),
-            parse_mode="Markdown"
-        )
-
-    def _show_news(self, call: CallbackQuery):
-        self.bot.edit_message_text(
-            "📰 Собираю новости...",
-            call.message.chat.id,
-            call.message.id
-        )
-
+    def _show_news(self, chat_id: int):
         articles = self.news_parser.fetch_sync()
         if not articles:
-            self.bot.edit_message_text(
+            self.bot.send_message(
+                chat_id,
                 "📰 Новостей пока нет",
-                call.message.chat.id,
-                call.message.id,
                 reply_markup=IKM().add(IKB("🔙 Назад", callback_data="menu"))
             )
             return
@@ -1035,16 +1012,48 @@ class IndyBot:
         translated = self.news_parser.translate_news(articles)
         article = translated[0]
         text = f"📰 **{article['title']}**\n\n{article['summary']}...\n\n[Читать]({article['link']})"
-        self.bot.edit_message_text(
+        self.bot.send_message(
+            chat_id,
             text,
-            call.message.chat.id,
-            call.message.id,
             reply_markup=IKM().add(IKB("➡️ Следующая", callback_data="news_next")),
             parse_mode="Markdown",
             disable_web_page_preview=True
         )
 
-        self.db.set_state(call.from_user.id, "news_view", str(translated))
+    # ============================================
+    # ОБРАБОТЧИК ТЕКСТА
+    # ============================================
+
+    def _handle_text(self, m: Message):
+        uid = m.from_user.id
+        state, data = self.db.get_state(uid)
+
+        if not state:
+            self.bot.send_message(
+                m.chat.id,
+                "Используй кнопки в меню 👇",
+                reply_markup=self._main_menu(uid)
+            )
+            return
+
+        if state == "waiting_year":
+            self._handle_year_input(m)
+            self.db.clear_state(uid)
+        elif state == "waiting_nico":
+            self._handle_nico_input(m)
+            self.db.clear_state(uid)
+        elif state == "waiting_ticket":
+            self._handle_ticket_input(m)
+            self.db.clear_state(uid)
+        elif state == "waiting_broadcast":
+            self._handle_broadcast_input(m)
+            self.db.clear_state(uid)
+        else:
+            self.bot.send_message(
+                m.chat.id,
+                "Используй кнопки в меню 👇",
+                reply_markup=self._main_menu(uid)
+            )
 
     def _handle_year_input(self, m: Message):
         try:
@@ -1160,91 +1169,14 @@ class IndyBot:
             reply_markup=IKM().add(IKB("🔙 Назад", callback_data="menu"))
         )
 
-    def _show_guide(self, call: CallbackQuery):
-        text = (
-            "📖 **Что такое IndyCar?**\n\n"
-            "IndyCar — американская серия гонок на открытых колесах.\n\n"
-            "**Особенности:**\n"
-            "🏁 Овальные трассы (США)\n"
-            "🚗 Болиды до 700 л.с.\n"
-            "🏆 Indy 500 — главная гонка\n"
-            "🌍 Пилоты из 10+ стран\n\n"
-            "**Как устроен чемпионат:**\n"
-            "• 17 этапов\n"
-            "• 7 типов трасс\n"
-            "• Очки топ-10\n"
-            "• Победитель по итогам сезона"
-        )
-
-        markup = IKM(row_width=2)
-        markup.add(
-            IKB("📋 Правила", callback_data="guide_rules"),
-            IKB("🏁 Трассы", callback_data="guide_tracks")
-        )
-        markup.add(IKB("🔙 Назад", callback_data="menu"))
-
-        self.bot.edit_message_text(
-            text,
-            call.message.chat.id,
-            call.message.id,
-            reply_markup=markup,
-            parse_mode="Markdown"
-        )
-
-    def _show_rules(self, call: CallbackQuery):
-        text = (
-            "📋 **Правила IndyCar**\n\n"
-            "**Очки:**\n"
-            "1 место — 50\n"
-            "2 место — 40\n"
-            "3 место — 35\n"
-            "...\n"
-            "10 место — 10\n"
-            "+1 за поул\n"
-            "+1 за быстрый круг\n\n"
-            "**Штрафы:**\n"
-            "• Превышение на пит-лейн\n"
-            "• Блокировка\n"
-            "• Нарушение флагов"
-        )
-
-        self.bot.edit_message_text(
-            text,
-            call.message.chat.id,
-            call.message.id,
-            reply_markup=IKM().add(IKB("🔙 Назад", callback_data="guide_intro")),
-            parse_mode="Markdown"
-        )
-
-    def _show_tracks(self, call: CallbackQuery):
-        text = (
-            "🏁 **Трассы IndyCar**\n\n"
-            "🏟️ **Овалы** (7 этапов)\n"
-            "• Indianapolis (2.5 мили)\n"
-            "• Texas (1.5 мили)\n\n"
-            "🔄 **Шоссейные** (5 этапов)\n"
-            "• Road America (4 мили)\n"
-            "• Mid-Ohio (2.25 мили)\n\n"
-            "🏙️ **Уличные** (5 этапов)\n"
-            "• St. Petersburg (1.8 мили)\n"
-            "• Long Beach (1.97 мили)\n\n"
-            "🏆 **Indy 500** — главная гонка"
-        )
-
-        self.bot.edit_message_text(
-            text,
-            call.message.chat.id,
-            call.message.id,
-            reply_markup=IKM().add(IKB("🔙 Назад", callback_data="guide_intro")),
-            parse_mode="Markdown"
-        )
-
     # ============================================
     # АДМИН-ОБРАБОТЧИК
     # ============================================
 
     def _handle_admin(self, call: CallbackQuery):
         data = call.data
+        chat_id = call.message.chat.id
+        msg_id = call.message.message_id
 
         if data == "admin_stats":
             stats = self.db.get_stats()
@@ -1256,13 +1188,7 @@ class IndyBot:
             for cmd, count in commands[:5]:
                 text += f"• {cmd} — {count}\n"
 
-            self.bot.edit_message_text(
-                text,
-                call.message.chat.id,
-                call.message.id,
-                reply_markup=self._admin_back(),
-                parse_mode="Markdown"
-            )
+            self._delete_and_send(chat_id, msg_id, text, self._admin_back())
             return
 
         if data == "admin_users":
@@ -1274,13 +1200,7 @@ class IndyBot:
             for uid in users[-10:]:
                 text += f"• `{uid}`\n"
 
-            self.bot.edit_message_text(
-                text,
-                call.message.chat.id,
-                call.message.id,
-                reply_markup=self._admin_back(),
-                parse_mode="Markdown"
-            )
+            self._delete_and_send(chat_id, msg_id, text, self._admin_back())
             return
 
         if data == "admin_commands":
@@ -1289,13 +1209,7 @@ class IndyBot:
             for cmd, count in commands[:10]:
                 text += f"• {cmd} — {count} раз\n"
 
-            self.bot.edit_message_text(
-                text,
-                call.message.chat.id,
-                call.message.id,
-                reply_markup=self._admin_back(),
-                parse_mode="Markdown"
-            )
+            self._delete_and_send(chat_id, msg_id, text, self._admin_back())
             return
 
         if data == "admin_tickets":
@@ -1308,18 +1222,13 @@ class IndyBot:
                     text += f"#{ticket[0]} | от @{ticket[3]} | {ticket[4][:16]}\n"
                     text += f"  {ticket[2][:80]}...\n\n"
 
-            self.bot.edit_message_text(
-                text,
-                call.message.chat.id,
-                call.message.id,
-                reply_markup=self._admin_back(),
-                parse_mode="Markdown"
-            )
+            self._delete_and_send(chat_id, msg_id, text, self._admin_back())
             return
 
         if data == "admin_broadcast":
             self.db.set_state(call.from_user.id, "waiting_broadcast")
-            self.bot.edit_message_text(
+            self._delete_and_send(
+                chat_id, msg_id,
                 "📨 **Рассылка**\n\n"
                 "Введите текст рассылки.\n"
                 "Опции:\n"
@@ -1327,20 +1236,17 @@ class IndyBot:
                 "• `active` — активным за 7 дней\n"
                 "• `ID,ID` — конкретным пользователям\n\n"
                 "Пример: `all | Привет!`",
-                call.message.chat.id,
-                call.message.id,
-                reply_markup=self._admin_back()
+                self._admin_back()
             )
             return
 
         if data == "admin_update_db":
             self.bot.edit_message_text(
                 "🔄 Обновляю базу знаний...",
-                call.message.chat.id,
-                call.message.id
+                chat_id,
+                msg_id
             )
             try:
-                import requests
                 resp = requests.get(
                     "https://site.api.espn.com/apis/site/v2/sports/racing/irl/standings",
                     timeout=10
@@ -1364,15 +1270,15 @@ class IndyBot:
 
                 self.bot.edit_message_text(
                     "✅ База знаний обновлена!",
-                    call.message.chat.id,
-                    call.message.id,
+                    chat_id,
+                    msg_id,
                     reply_markup=self._admin_back()
                 )
             except Exception as e:
                 self.bot.edit_message_text(
                     f"❌ Ошибка: {e}",
-                    call.message.chat.id,
-                    call.message.id,
+                    chat_id,
+                    msg_id,
                     reply_markup=self._admin_back()
                 )
             return
