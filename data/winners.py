@@ -1,7 +1,7 @@
 # data/winners.py
 # Полный список победителей Indy 500 с 1911 по 2026 год
 
-winners = [
+WINNERS = [
     {"year": 1911, "driver": "Рэй Харрун"},
     {"year": 1912, "driver": "Джо Доусон"},
     {"year": 1913, "driver": "Жюль Гу"},
