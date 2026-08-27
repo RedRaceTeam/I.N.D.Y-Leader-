@@ -297,7 +297,7 @@ class Translator:
 
 
 # ============================================
-# AI (НИКО) — только для ответов на вопросы
+# AI (НИКО)
 # ============================================
 
 class NicoAI:
@@ -621,10 +621,13 @@ class IndyBot:
         self.db.set_state(m.from_user.id, "waiting_ticket")
 
     # ============================================
-    # ОБРАБОТЧИК КНОПОК
+    # ОБРАБОТЧИК КНОПОК (ФИКС: answer_callback_query)
     # ============================================
 
     def _handle_callback(self, call: CallbackQuery):
+        # ВСЕГДА отвечаем на callback
+        self.bot.answer_callback_query(call.id)
+        
         data = call.data
         uid = call.from_user.id
 
@@ -637,7 +640,6 @@ class IndyBot:
                 reply_markup=self._main_menu(uid),
                 parse_mode="Markdown"
             )
-            self.bot.answer_callback_query(call.id)
             return
 
         if data == "level_pro":
@@ -649,12 +651,10 @@ class IndyBot:
                 reply_markup=self._main_menu(uid),
                 parse_mode="Markdown"
             )
-            self.bot.answer_callback_query(call.id)
             return
 
         if data == "switch_level":
             self.cmd_switch(call.message)
-            self.bot.answer_callback_query(call.id)
             return
 
         if data == "menu":
@@ -665,7 +665,6 @@ class IndyBot:
                 reply_markup=self._main_menu(uid),
                 parse_mode="Markdown"
             )
-            self.bot.answer_callback_query(call.id)
             return
 
         if data.startswith("admin_"):
@@ -682,7 +681,6 @@ class IndyBot:
         if data == "driver_random":
             code, driver = random.choice(list(DRIVERS.items()))
             self._send_driver(call.message.chat.id, driver)
-            self.bot.answer_callback_query(call.id)
             return
 
         if data.startswith("driver_"):
@@ -692,7 +690,6 @@ class IndyBot:
                 self._send_driver(call.message.chat.id, driver)
             else:
                 self.bot.answer_callback_query(call.id, "Пилот не найден")
-            self.bot.answer_callback_query(call.id)
             return
 
         if data == "schedule_top":
@@ -715,7 +712,6 @@ class IndyBot:
                 call.message.id,
                 reply_markup=IKM().add(IKB("🔙 Назад", callback_data="menu"))
             )
-            self.bot.answer_callback_query(call.id)
             return
 
         if data == "news":
@@ -730,7 +726,6 @@ class IndyBot:
                 call.message.id,
                 reply_markup=IKM().add(IKB("🔙 Назад", callback_data="menu"))
             )
-            self.bot.answer_callback_query(call.id)
             return
 
         if data == "guide_intro":
@@ -755,7 +750,6 @@ class IndyBot:
                 parse_mode="Markdown",
                 disable_web_page_preview=True
             )
-            self.bot.answer_callback_query(call.id)
             return
 
         if data == "about":
@@ -771,7 +765,6 @@ class IndyBot:
                 parse_mode="Markdown",
                 disable_web_page_preview=True
             )
-            self.bot.answer_callback_query(call.id)
             return
 
         self.bot.answer_callback_query(call.id, "Неизвестная команда")
@@ -867,7 +860,7 @@ class IndyBot:
         return markup
 
     # ============================================
-    # ВСПОМОГАТЕЛЬНЫЕ МЕТОДЫ
+    # ВСПОМОГАТЕЛЬНЫЕ МЕТОДЫ (ФИКС: photo без edit)
     # ============================================
 
     def _send_driver(self, chat_id: int, driver: Dict):
@@ -879,11 +872,19 @@ class IndyBot:
 
         if driver.get('image'):
             try:
-                self.bot.send_photo(chat_id, driver['image'], caption=text, parse_mode="Markdown", reply_markup=markup)
+                # Отправляем НОВОЕ сообщение с фото
+                self.bot.send_photo(
+                    chat_id,
+                    driver['image'],
+                    caption=text,
+                    parse_mode="Markdown",
+                    reply_markup=markup
+                )
                 return
-            except:
-                pass
+            except Exception as e:
+                logger.error(f"Photo send error: {e}")
 
+        # Если фото нет или ошибка — текстом
         self.bot.send_message(chat_id, text, parse_mode="Markdown", reply_markup=markup)
 
     def _show_drivers_list(self, call: CallbackQuery):
@@ -914,7 +915,6 @@ class IndyBot:
             reply_markup=markup,
             parse_mode="Markdown"
         )
-        self.bot.answer_callback_query(call.id)
 
     def _show_schedule_and_top(self, call: CallbackQuery):
         self.bot.edit_message_text(
@@ -978,8 +978,6 @@ class IndyBot:
                 reply_markup=IKM().add(IKB("🔙 Назад", callback_data="menu"))
             )
 
-        self.bot.answer_callback_query(call.id)
-
     def _show_indy500_menu(self, call: CallbackQuery):
         markup = IKM(row_width=2)
         markup.add(
@@ -995,7 +993,6 @@ class IndyBot:
             reply_markup=markup,
             parse_mode="Markdown"
         )
-        self.bot.answer_callback_query(call.id)
 
     def _show_top_winners(self, call: CallbackQuery):
         wins = Counter()
@@ -1017,7 +1014,6 @@ class IndyBot:
             reply_markup=IKM().add(IKB("🔙 Назад", callback_data="indy500_menu")),
             parse_mode="Markdown"
         )
-        self.bot.answer_callback_query(call.id)
 
     def _show_news(self, call: CallbackQuery):
         self.bot.edit_message_text(
@@ -1034,13 +1030,9 @@ class IndyBot:
                 call.message.id,
                 reply_markup=IKM().add(IKB("🔙 Назад", callback_data="menu"))
             )
-            self.bot.answer_callback_query(call.id)
             return
 
-        # Переводим новости
         translated = self.news_parser.translate_news(articles)
-
-        # Показываем первую
         article = translated[0]
         text = f"📰 **{article['title']}**\n\n{article['summary']}...\n\n[Читать]({article['link']})"
         self.bot.edit_message_text(
@@ -1052,9 +1044,7 @@ class IndyBot:
             disable_web_page_preview=True
         )
 
-        # Сохраняем все статьи в состояние
         self.db.set_state(call.from_user.id, "news_view", str(translated))
-        self.bot.answer_callback_query(call.id)
 
     def _handle_year_input(self, m: Message):
         try:
@@ -1200,7 +1190,6 @@ class IndyBot:
             reply_markup=markup,
             parse_mode="Markdown"
         )
-        self.bot.answer_callback_query(call.id)
 
     def _show_rules(self, call: CallbackQuery):
         text = (
@@ -1226,7 +1215,6 @@ class IndyBot:
             reply_markup=IKM().add(IKB("🔙 Назад", callback_data="guide_intro")),
             parse_mode="Markdown"
         )
-        self.bot.answer_callback_query(call.id)
 
     def _show_tracks(self, call: CallbackQuery):
         text = (
@@ -1250,7 +1238,6 @@ class IndyBot:
             reply_markup=IKM().add(IKB("🔙 Назад", callback_data="guide_intro")),
             parse_mode="Markdown"
         )
-        self.bot.answer_callback_query(call.id)
 
     # ============================================
     # АДМИН-ОБРАБОТЧИК
@@ -1276,7 +1263,6 @@ class IndyBot:
                 reply_markup=self._admin_back(),
                 parse_mode="Markdown"
             )
-            self.bot.answer_callback_query(call.id)
             return
 
         if data == "admin_users":
@@ -1295,7 +1281,6 @@ class IndyBot:
                 reply_markup=self._admin_back(),
                 parse_mode="Markdown"
             )
-            self.bot.answer_callback_query(call.id)
             return
 
         if data == "admin_commands":
@@ -1311,7 +1296,6 @@ class IndyBot:
                 reply_markup=self._admin_back(),
                 parse_mode="Markdown"
             )
-            self.bot.answer_callback_query(call.id)
             return
 
         if data == "admin_tickets":
@@ -1331,7 +1315,6 @@ class IndyBot:
                 reply_markup=self._admin_back(),
                 parse_mode="Markdown"
             )
-            self.bot.answer_callback_query(call.id)
             return
 
         if data == "admin_broadcast":
@@ -1348,7 +1331,6 @@ class IndyBot:
                 call.message.id,
                 reply_markup=self._admin_back()
             )
-            self.bot.answer_callback_query(call.id)
             return
 
         if data == "admin_update_db":
@@ -1393,7 +1375,6 @@ class IndyBot:
                     call.message.id,
                     reply_markup=self._admin_back()
                 )
-            self.bot.answer_callback_query(call.id)
             return
 
     def _admin_back(self) -> IKM:
