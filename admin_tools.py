@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 
 """
-admin_tools.py — Админские функции для INDY Leader
+admin_tools.py — Админские функции для INDY Leader v2.5.0
 
 Содержит:
 - Работа с пользователями (все, активные, статистика)
@@ -10,6 +10,7 @@ admin_tools.py — Админские функции для INDY Leader
 - Заявки в техподдержку
 - Обновление базы знаний
 - Автообновление по расписанию
+- Блокировка/разблокировка пользователей
 """
 
 import sqlite3
@@ -171,8 +172,8 @@ async def update_knowledge_base() -> bool:
                     'points': entry.get('points', 0),
                     'team': entry.get('team', {}).get('displayName', '')
                 })
-        except:
-            pass
+        except Exception as e:
+            print(f"⚠️ Ошибка ESPN: {e}")
         
         # Формируем файл базы знаний
         with open("data/knowledge.txt", "w", encoding="utf-8") as f:
@@ -272,6 +273,65 @@ def get_ticket_by_id(ticket_id: int) -> Optional[Tuple]:
     return ticket
 
 # ============================================
+# БЛОКИРОВКА / РАЗБЛОКИРОВКА ПОЛЬЗОВАТЕЛЕЙ
+# ============================================
+
+def block_user(user_id: int) -> bool:
+    """Блокирует пользователя"""
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    
+    # Создаём таблицу блокировок если нет
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS blocked_users (
+            user_id INTEGER PRIMARY KEY,
+            blocked_at TEXT,
+            reason TEXT
+        )
+    ''')
+    
+    c.execute('''
+        INSERT OR IGNORE INTO blocked_users (user_id, blocked_at, reason)
+        VALUES (?, ?, ?)
+    ''', (user_id, datetime.now().isoformat(), 'Заблокирован администратором'))
+    
+    conn.commit()
+    affected = c.rowcount
+    conn.close()
+    return affected > 0
+
+def unblock_user(user_id: int) -> bool:
+    """Разблокирует пользователя"""
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute('DELETE FROM blocked_users WHERE user_id = ?', (user_id,))
+    conn.commit()
+    affected = c.rowcount
+    conn.close()
+    return affected > 0
+
+def is_user_blocked(user_id: int) -> bool:
+    """Проверяет, заблокирован ли пользователь"""
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute('SELECT user_id FROM blocked_users WHERE user_id = ?', (user_id,))
+    result = c.fetchone()
+    conn.close()
+    return result is not None
+
+def get_blocked_users() -> List[Tuple]:
+    """Получает список заблокированных пользователей"""
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute('''
+        SELECT user_id, blocked_at, reason
+        FROM blocked_users ORDER BY blocked_at DESC
+    ''')
+    users = c.fetchall()
+    conn.close()
+    return users
+
+# ============================================
 # ПРОВЕРКА ПОДКЛЮЧЕНИЯ К БАЗЕ
 # ============================================
 
@@ -300,3 +360,49 @@ def cleanup_old_stats(days: int = 90):
     conn.commit()
     conn.close()
     print(f"🧹 Удалено {deleted} записей статистики старше {days} дней")
+
+# ============================================
+# БЭКАП БАЗЫ ДАННЫХ
+# ============================================
+
+def backup_database() -> str:
+    """Создаёт бэкап базы данных"""
+    import shutil
+    backup_name = f"backups/indyleader_backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}.db"
+    try:
+        import os
+        os.makedirs("backups", exist_ok=True)
+        shutil.copy2(DB_PATH, backup_name)
+        print(f"✅ Бэкап создан: {backup_name}")
+        return backup_name
+    except Exception as e:
+        print(f"❌ Ошибка бэкапа: {e}")
+        return ""
+
+# ============================================
+# СТАТИСТИКА ПО КОМАНДАМ ЗА ПЕРИОД
+# ============================================
+
+def get_commands_stats_period(days: int = 7) -> Dict:
+    """Статистика команд за период"""
+    cutoff = (datetime.now() - timedelta(days=days)).isoformat()
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    
+    c.execute('''
+        SELECT command, COUNT(*) FROM stats
+        WHERE timestamp > ?
+        GROUP BY command
+        ORDER BY COUNT(*) DESC
+    ''', (cutoff,))
+    commands = c.fetchall()
+    
+    c.execute('SELECT COUNT(DISTINCT user_id) FROM stats WHERE timestamp > ?', (cutoff,))
+    active_users = c.fetchone()[0]
+    
+    conn.close()
+    return {
+        'commands': commands,
+        'active_users': active_users,
+        'period_days': days
+    }
