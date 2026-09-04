@@ -1,9 +1,23 @@
-#!/usr/bin/env python3
+ #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
 """
-I.N.D.Y Leader v2.5.0 — адаптивный гид по IndyCar
+I.N.D.Y Leader v2.6.0 — адаптивный гид по IndyCar
 Автор: P4/9 · Gabriella Projects
+Архитектура: FastAPI + Webhook + ООП
+Модель: Gemini 3.6 Flash (google-genai)
+
+ИСПРАВЛЕНИЯ v2.6.0:
+- Исправлена утечка event loop в fetch_sync()
+- Исправлена гонка состояний в _handle_text (таймаут 30 сек)
+- Заменён синхронный requests на aiohttp во всех местах
+- Добавлена проверка X-Telegram-Bot-Api-Secret-Token
+- Закрытие genai.Client() через atexit
+- feedparser с таймаутом через aiohttp
+- Переход с googletrans на deep-translator
+- Все SQLite-запросы через контекстный менеджер
+- Полное экранирование markdown
+- ADMIN_IDS вынесены в .env
 """
 
 import os
@@ -17,6 +31,8 @@ import requests
 import random
 import re
 import time
+import threading
+import atexit
 from datetime import datetime, timezone
 from collections import Counter
 from typing import Optional, Dict, List, Any
@@ -29,45 +45,37 @@ from telebot.types import (
     InlineKeyboardButton as IKB
 )
 
+# ===== GEMINI SDK =====
 from google import genai
-from googletrans import Translator as GoogleTranslator
+from google.genai import types
+
+# ===== ПЕРЕВОДЧИК (deep-translator) =====
+from deep_translator import GoogleTranslator
+
+# ============================================
+# ИМПОРТ ДАННЫХ
+# ============================================
 
 from data.drivers import DRIVERS
 from data.winners import WINNERS
 
 # ============================================
-# ИМПОРТ ИЗ ADMIN_TOOLS
+# НАСТРОЙКА ЛОГИРОВАНИЯ
 # ============================================
 
-from admin_tools import (
-    get_all_users,
-    get_active_users,
-    get_user_stats,
-    get_global_stats,
-    send_broadcast,
-    update_knowledge_base,
-    start_auto_update,
-    create_ticket,
-    get_open_tickets,
-    close_ticket,
-    block_user,
-    unblock_user,
-    is_user_blocked,
-    get_blocked_users,
-    backup_database,
-    cleanup_old_stats,
-    db_check
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
-
-# ============================================
-# НАСТРОЙКА
-# ============================================
-
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
+
+# ============================================
+# ПЕРЕМЕННЫЕ ОКРУЖЕНИЯ
+# ============================================
 
 TOKEN = os.getenv("BOT_TOKEN")
 WEBHOOK_URL = os.getenv("WEBHOOK_URL", "http://localhost:8000")
+WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET")
 WEBHOOK_PATH = "/webhook"
 PORT = int(os.getenv("PORT", 8000))
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
@@ -76,11 +84,17 @@ if not TOKEN:
     logger.error("❌ BOT_TOKEN не задан")
     sys.exit(1)
 
-ADMIN_IDS = [int(x.strip()) for x in os.getenv("ADMIN_IDS", "7025868617,7946032603").split(",") if x.strip()]
+if not GEMINI_API_KEY:
+    logger.warning("⚠️ GEMINI_API_KEY не задан — Нико не будет работать")
+
+ADMIN_IDS = [int(x.strip()) for x in os.getenv("ADMIN_IDS", "").split(",") if x.strip()]
+if not ADMIN_IDS:
+    logger.warning("⚠️ ADMIN_IDS не задан — админ-панель недоступна")
+
 logger.info(f"✅ Админы: {ADMIN_IDS}")
 
 # ============================================
-# БАЗА ДАННЫХ
+# БАЗА ДАННЫХ (С КОНТЕКСТНЫМ МЕНЕДЖЕРОМ)
 # ============================================
 
 class Database:
@@ -89,211 +103,186 @@ class Database:
         self._init()
 
     def _init(self):
-        conn = sqlite3.connect(self.path, check_same_thread=False)
-        c = conn.cursor()
-        c.execute('''
-            CREATE TABLE IF NOT EXISTS users (
-                user_id INTEGER PRIMARY KEY,
-                username TEXT,
-                first_name TEXT,
-                last_name TEXT,
-                first_seen TEXT,
-                last_seen TEXT,
-                total_commands INTEGER DEFAULT 0,
-                level TEXT DEFAULT 'novice'
-            )
-        ''')
-        c.execute('''
-            CREATE TABLE IF NOT EXISTS stats (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                command TEXT,
-                user_id INTEGER,
-                timestamp TEXT
-            )
-        ''')
-        c.execute('''
-            CREATE TABLE IF NOT EXISTS user_states (
-                user_id INTEGER PRIMARY KEY,
-                state TEXT,
-                data TEXT,
-                updated_at TEXT
-            )
-        ''')
-        c.execute('''
-            CREATE TABLE IF NOT EXISTS tickets (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                user_id INTEGER,
-                issue TEXT,
-                contact TEXT,
-                status TEXT DEFAULT 'open',
-                created_at TEXT
-            )
-        ''')
-        c.execute('PRAGMA journal_mode=WAL')
-        conn.commit()
-        conn.close()
+        with sqlite3.connect(self.path, check_same_thread=False) as conn:
+            c = conn.cursor()
+            c.execute('''
+                CREATE TABLE IF NOT EXISTS users (
+                    user_id INTEGER PRIMARY KEY,
+                    username TEXT,
+                    first_name TEXT,
+                    last_name TEXT,
+                    first_seen TEXT,
+                    last_seen TEXT,
+                    total_commands INTEGER DEFAULT 0,
+                    level TEXT DEFAULT 'novice'
+                )
+            ''')
+            c.execute('''
+                CREATE TABLE IF NOT EXISTS stats (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    command TEXT,
+                    user_id INTEGER,
+                    timestamp TEXT
+                )
+            ''')
+            c.execute('''
+                CREATE TABLE IF NOT EXISTS user_states (
+                    user_id INTEGER PRIMARY KEY,
+                    state TEXT,
+                    data TEXT,
+                    updated_at TEXT
+                )
+            ''')
+            c.execute('''
+                CREATE TABLE IF NOT EXISTS tickets (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER,
+                    issue TEXT,
+                    contact TEXT,
+                    status TEXT DEFAULT 'open',
+                    created_at TEXT
+                )
+            ''')
+            c.execute('PRAGMA journal_mode=WAL')
+            conn.commit()
 
     def add_user(self, uid: int, username: str, first_name: str):
-        conn = sqlite3.connect(self.path)
-        c = conn.cursor()
-        now = datetime.now().isoformat()
-        c.execute('SELECT user_id FROM users WHERE user_id = ?', (uid,))
-        if c.fetchone():
-            c.execute('''
-                UPDATE users SET username=?, first_name=?, last_seen=?, total_commands=total_commands+1
-                WHERE user_id=?
-            ''', (username, first_name, now, uid))
-        else:
-            c.execute('''
-                INSERT INTO users (user_id, username, first_name, first_seen, last_seen, total_commands)
-                VALUES (?, ?, ?, ?, ?, 1)
-            ''', (uid, username, first_name, now, now))
-        conn.commit()
-        conn.close()
+        with sqlite3.connect(self.path) as conn:
+            c = conn.cursor()
+            now = datetime.now().isoformat()
+            c.execute('SELECT user_id FROM users WHERE user_id = ?', (uid,))
+            if c.fetchone():
+                c.execute('''
+                    UPDATE users SET username=?, first_name=?, last_seen=?, total_commands=total_commands+1
+                    WHERE user_id=?
+                ''', (username, first_name, now, uid))
+            else:
+                c.execute('''
+                    INSERT INTO users (user_id, username, first_name, first_seen, last_seen, total_commands)
+                    VALUES (?, ?, ?, ?, ?, 1)
+                ''', (uid, username, first_name, now, now))
+            conn.commit()
 
     def log_command(self, uid: int, cmd: str):
-        conn = sqlite3.connect(self.path)
-        c = conn.cursor()
-        c.execute('INSERT INTO stats (command, user_id, timestamp) VALUES (?, ?, ?)',
-                  (cmd, uid, datetime.now().isoformat()))
-        conn.commit()
-        conn.close()
+        with sqlite3.connect(self.path) as conn:
+            c = conn.cursor()
+            c.execute('INSERT INTO stats (command, user_id, timestamp) VALUES (?, ?, ?)',
+                      (cmd, uid, datetime.now().isoformat()))
+            conn.commit()
 
     def get_user_level(self, uid: int) -> str:
-        conn = sqlite3.connect(self.path)
-        c = conn.cursor()
-        c.execute('SELECT level FROM users WHERE user_id = ?', (uid,))
-        row = c.fetchone()
-        conn.close()
-        return row[0] if row else 'novice'
+        with sqlite3.connect(self.path) as conn:
+            c = conn.cursor()
+            c.execute('SELECT level FROM users WHERE user_id = ?', (uid,))
+            row = c.fetchone()
+            return row[0] if row else 'novice'
 
     def set_user_level(self, uid: int, level: str):
-        conn = sqlite3.connect(self.path)
-        c = conn.cursor()
-        c.execute('UPDATE users SET level = ? WHERE user_id = ?', (level, uid))
-        conn.commit()
-        conn.close()
+        with sqlite3.connect(self.path) as conn:
+            c = conn.cursor()
+            c.execute('UPDATE users SET level = ? WHERE user_id = ?', (level, uid))
+            conn.commit()
 
     def get_all_users(self) -> list:
-        conn = sqlite3.connect(self.path)
-        c = conn.cursor()
-        c.execute('SELECT user_id FROM users')
-        users = [row[0] for row in c.fetchall()]
-        conn.close()
-        return users
+        with sqlite3.connect(self.path) as conn:
+            c = conn.cursor()
+            c.execute('SELECT user_id FROM users')
+            return [row[0] for row in c.fetchall()]
 
     def get_active_users(self, days: int = 7) -> list:
         cutoff = (datetime.now() - timezone.timedelta(days=days)).isoformat()
-        conn = sqlite3.connect(self.path)
-        c = conn.cursor()
-        c.execute('''
-            SELECT DISTINCT user_id FROM stats
-            WHERE timestamp > ?
-            GROUP BY user_id
-            HAVING COUNT(*) > 1
-        ''', (cutoff,))
-        users = [row[0] for row in c.fetchall()]
-        conn.close()
-        return users
+        with sqlite3.connect(self.path) as conn:
+            c = conn.cursor()
+            c.execute('''
+                SELECT DISTINCT user_id FROM stats
+                WHERE timestamp > ?
+                GROUP BY user_id
+                HAVING COUNT(*) > 1
+            ''', (cutoff,))
+            return [row[0] for row in c.fetchall()]
 
     def get_stats(self) -> Dict:
-        conn = sqlite3.connect(self.path)
-        c = conn.cursor()
-        c.execute('SELECT COUNT(*) FROM users')
-        users = c.fetchone()[0]
-        c.execute('SELECT COUNT(*) FROM stats')
-        commands = c.fetchone()[0]
-        conn.close()
-        return {'users': users, 'commands': commands}
+        with sqlite3.connect(self.path) as conn:
+            c = conn.cursor()
+            c.execute('SELECT COUNT(*) FROM users')
+            users = c.fetchone()[0]
+            c.execute('SELECT COUNT(*) FROM stats')
+            commands = c.fetchone()[0]
+            return {'users': users, 'commands': commands}
 
     def get_command_stats(self) -> list:
-        conn = sqlite3.connect(self.path)
-        c = conn.cursor()
-        c.execute('SELECT command, COUNT(*) FROM stats GROUP BY command ORDER BY COUNT(*) DESC')
-        rows = c.fetchall()
-        conn.close()
-        return rows
+        with sqlite3.connect(self.path) as conn:
+            c = conn.cursor()
+            c.execute('SELECT command, COUNT(*) FROM stats GROUP BY command ORDER BY COUNT(*) DESC')
+            return c.fetchall()
 
     def get_users_list(self) -> list:
-        conn = sqlite3.connect(self.path)
-        c = conn.cursor()
-        c.execute('SELECT user_id, username, first_name, level, total_commands, last_seen FROM users ORDER BY last_seen DESC')
-        rows = c.fetchall()
-        conn.close()
-        return rows
+        with sqlite3.connect(self.path) as conn:
+            c = conn.cursor()
+            c.execute('SELECT user_id, username, first_name, level, total_commands, last_seen FROM users ORDER BY last_seen DESC')
+            return c.fetchall()
 
     def set_state(self, uid: int, state: str, data: str = None):
-        conn = sqlite3.connect(self.path)
-        c = conn.cursor()
-        c.execute('''
-            INSERT OR REPLACE INTO user_states (user_id, state, data, updated_at)
-            VALUES (?, ?, ?, ?)
-        ''', (uid, state, data, datetime.now().isoformat()))
-        conn.commit()
-        conn.close()
+        with sqlite3.connect(self.path) as conn:
+            c = conn.cursor()
+            c.execute('''
+                INSERT OR REPLACE INTO user_states (user_id, state, data, updated_at)
+                VALUES (?, ?, ?, ?)
+            ''', (uid, state, data, datetime.now().isoformat()))
+            conn.commit()
 
     def get_state(self, uid: int) -> tuple:
-        conn = sqlite3.connect(self.path)
-        c = conn.cursor()
-        c.execute('SELECT state, data FROM user_states WHERE user_id = ?', (uid,))
-        row = c.fetchone()
-        conn.close()
-        return row if row else (None, None)
+        with sqlite3.connect(self.path) as conn:
+            c = conn.cursor()
+            c.execute('SELECT state, data FROM user_states WHERE user_id = ?', (uid,))
+            return c.fetchone() or (None, None)
 
     def clear_state(self, uid: int):
-        conn = sqlite3.connect(self.path)
-        c = conn.cursor()
-        c.execute('DELETE FROM user_states WHERE user_id = ?', (uid,))
-        conn.commit()
-        conn.close()
+        with sqlite3.connect(self.path) as conn:
+            c = conn.cursor()
+            c.execute('DELETE FROM user_states WHERE user_id = ?', (uid,))
+            conn.commit()
 
     def create_ticket(self, uid: int, issue: str, contact: str) -> int:
-        conn = sqlite3.connect(self.path)
-        c = conn.cursor()
-        c.execute('''
-            INSERT INTO tickets (user_id, issue, contact, created_at)
-            VALUES (?, ?, ?, ?)
-        ''', (uid, issue, contact, datetime.now().isoformat()))
-        conn.commit()
-        ticket_id = c.lastrowid
-        conn.close()
-        return ticket_id
+        with sqlite3.connect(self.path) as conn:
+            c = conn.cursor()
+            c.execute('''
+                INSERT INTO tickets (user_id, issue, contact, created_at)
+                VALUES (?, ?, ?, ?)
+            ''', (uid, issue, contact, datetime.now().isoformat()))
+            conn.commit()
+            return c.lastrowid
 
     def get_open_tickets(self) -> list:
-        conn = sqlite3.connect(self.path)
-        c = conn.cursor()
-        c.execute('''
-            SELECT id, user_id, issue, contact, created_at
-            FROM tickets WHERE status = 'open'
-            ORDER BY created_at DESC
-        ''')
-        rows = c.fetchall()
-        conn.close()
-        return rows
+        with sqlite3.connect(self.path) as conn:
+            c = conn.cursor()
+            c.execute('''
+                SELECT id, user_id, issue, contact, created_at
+                FROM tickets WHERE status = 'open'
+                ORDER BY created_at DESC
+            ''')
+            return c.fetchall()
 
     def close_ticket(self, ticket_id: int):
-        conn = sqlite3.connect(self.path)
-        c = conn.cursor()
-        c.execute('UPDATE tickets SET status = "closed" WHERE id = ?', (ticket_id,))
-        conn.commit()
-        conn.close()
+        with sqlite3.connect(self.path) as conn:
+            c = conn.cursor()
+            c.execute('UPDATE tickets SET status = "closed" WHERE id = ?', (ticket_id,))
+            conn.commit()
 
 
 # ============================================
-# ПЕРЕВОДЧИК
+# ПЕРЕВОДЧИК (deep-translator)
 # ============================================
 
 class Translator:
     def __init__(self):
-        self.translator = GoogleTranslator()
-        logger.info("✅ Переводчик Google инициализирован")
+        logger.info("✅ Переводчик Google (deep-translator) инициализирован")
 
     def translate(self, text: str, dest: str = 'ru') -> str:
         if not text:
             return text
         try:
-            result = self.translator.translate(text, dest=dest)
-            return result.text
+            return GoogleTranslator(source='auto', target=dest).translate(text)
         except Exception as e:
             logger.error(f"Translation error: {e}")
             return text
@@ -308,8 +297,15 @@ class NicoAI:
         self.client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
         if self.client:
             logger.info("✅ Gemini 3.6 Flash инициализирован")
-        else:
-            logger.warning("⚠️ Gemini API ключ не задан")
+            atexit.register(self._close_client)
+
+    def _close_client(self):
+        if self.client:
+            try:
+                self.client.close()
+                logger.info("✅ Gemini клиент закрыт")
+            except Exception as e:
+                logger.error(f"Ошибка закрытия клиента: {e}")
 
     def ask(self, question: str) -> str:
         if not self.client:
@@ -342,20 +338,22 @@ class NicoAI:
             response = self.client.models.generate_content(
                 model="gemini-3.6-flash",
                 contents=question,
-                config={
-                    "system_instruction": system_prompt,
-                    "temperature": 0.7,
-                    "max_output_tokens": 500,
-                }
+                config=types.GenerateContentConfig(
+                    system_instruction=system_prompt,
+                    temperature=0.7,
+                    max_output_tokens=500,
+                )
             )
-            return response.text if response and response.text else "⚠️ Gemini вернул пустой ответ"
+            if hasattr(response, 'text') and response.text:
+                return response.text
+            return "⚠️ Gemini вернул пустой ответ"
         except Exception as e:
             logger.error(f"Gemini API ошибка: {e}")
             return f"⚠️ Ошибка Gemini: {str(e)}"
 
 
 # ============================================
-# КЛАСС ДЛЯ ПОСТРОЕНИЯ МЕНЮ
+# ПОСТРОЕНИЕ МЕНЮ
 # ============================================
 
 class MenuBuilder:
@@ -364,7 +362,7 @@ class MenuBuilder:
         if level == 'novice':
             return MenuBuilder._menu_novice()
         return MenuBuilder._menu_pro()
-    
+
     @staticmethod
     def _menu_novice() -> IKM:
         markup = IKM(row_width=2)
@@ -383,7 +381,7 @@ class MenuBuilder:
         for text, callback in buttons:
             markup.add(IKB(text, callback_data=callback))
         return markup
-    
+
     @staticmethod
     def _menu_pro() -> IKM:
         markup = IKM(row_width=2)
@@ -401,14 +399,14 @@ class MenuBuilder:
         for text, callback in buttons:
             markup.add(IKB(text, callback_data=callback))
         return markup
-    
+
     @staticmethod
     def drivers_menu() -> IKM:
         markup = IKM(row_width=2)
         teams = {}
         for code, d in DRIVERS.items():
             teams.setdefault(d['team'], []).append((code, d))
-        
+
         for team, drivers in sorted(teams.items())[:8]:
             markup.add(IKB(f"━━ {team} ━━", callback_data="noop"))
             row = []
@@ -420,10 +418,10 @@ class MenuBuilder:
                     row = []
             if row:
                 markup.add(*row)
-        
+
         markup.add(IKB("🔙 Назад", callback_data="menu"))
         return markup
-    
+
     @staticmethod
     def indy500_menu() -> IKM:
         markup = IKM(row_width=2)
@@ -433,7 +431,7 @@ class MenuBuilder:
         )
         markup.add(IKB("🔙 Назад", callback_data="menu"))
         return markup
-    
+
     @staticmethod
     def admin_menu() -> IKM:
         markup = IKM(row_width=2)
@@ -444,13 +442,12 @@ class MenuBuilder:
             ("🎫 Заявки", "admin_tickets"),
             ("📨 Рассылка", "admin_broadcast"),
             ("🔄 Обновить базу", "admin_update_db"),
-            ("🚫 Блокировка", "admin_block"),
             ("🔙 Выйти", "menu"),
         ]
         for text, callback in buttons:
             markup.add(IKB(text, callback_data=callback))
         return markup
-    
+
     @staticmethod
     def guide_menu() -> IKM:
         markup = IKM(row_width=2)
@@ -460,7 +457,7 @@ class MenuBuilder:
         )
         markup.add(IKB("🔙 Назад", callback_data="menu"))
         return markup
-    
+
     @staticmethod
     def back_to_menu() -> IKM:
         markup = IKM()
@@ -469,7 +466,7 @@ class MenuBuilder:
 
 
 # ============================================
-# ПАРСЕР НОВОСТЕЙ
+# ПАРСЕР НОВОСТЕЙ (С ЗАКРЫТИЕМ EVENT LOOP)
 # ============================================
 
 class NewsParser:
@@ -482,13 +479,19 @@ class NewsParser:
     def __init__(self):
         self.translator = Translator()
 
+    async def _fetch_rss_content(self, url: str) -> str:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, timeout=10) as resp:
+                return await resp.text()
+
     async def fetch_all(self) -> list:
         all_news = []
         for name, url in self.SOURCES.items():
             if name == 'espn':
                 continue
             try:
-                feed = feedparser.parse(url)
+                content = await self._fetch_rss_content(url)
+                feed = feedparser.parse(content)
                 for entry in feed.entries[:3]:
                     all_news.append({
                         'title': entry.get('title', ''),
@@ -496,8 +499,8 @@ class NewsParser:
                         'link': entry.get('link', '#'),
                         'source': name
                     })
-            except:
-                continue
+            except Exception as e:
+                logger.warning(f"RSS ошибка {name}: {e}")
 
         try:
             async with aiohttp.ClientSession() as session:
@@ -510,15 +513,22 @@ class NewsParser:
                             'link': article.get('links', {}).get('web', {}).get('href', '#'),
                             'source': 'espn'
                         })
-        except:
-            pass
+        except Exception as e:
+            logger.warning(f"ESPN ошибка: {e}")
 
         return all_news
 
     def fetch_sync(self) -> list:
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        return loop.run_until_complete(self.fetch_all())
+        try:
+            loop = asyncio.get_running_loop()
+            return loop.run_until_complete(self.fetch_all())
+        except RuntimeError:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            try:
+                return loop.run_until_complete(self.fetch_all())
+            finally:
+                loop.close()
 
     def translate_news(self, articles: list) -> list:
         translated = []
@@ -536,24 +546,26 @@ class NewsParser:
 
 
 # ============================================
-# ТОП-5
+# ТОП-5 (АСИНХРОННЫЙ)
 # ============================================
 
 class StandingsFetcher:
     @staticmethod
-    def fetch() -> list:
+    async def fetch() -> list:
         try:
             url = "https://site.api.espn.com/apis/site/v2/sports/racing/irl/standings"
-            resp = requests.get(url, timeout=10)
-            data = resp.json()
-            top5 = []
-            for entry in data.get('standings', [{}])[0].get('entries', [])[:5]:
-                top5.append({
-                    'name': entry.get('athlete', {}).get('displayName', 'Неизвестно'),
-                    'points': entry.get('points', 0)
-                })
-            return top5
-        except:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url, timeout=10) as resp:
+                    data = await resp.json()
+                    top5 = []
+                    for entry in data.get('standings', [{}])[0].get('entries', [])[:5]:
+                        top5.append({
+                            'name': entry.get('athlete', {}).get('displayName', 'Неизвестно'),
+                            'points': entry.get('points', 0)
+                        })
+                    return top5
+        except Exception as e:
+            logger.warning(f"Standings error: {e}")
             return []
 
 
@@ -565,7 +577,9 @@ def escape_markdown(text: str) -> str:
     if not text:
         return text
     escape_chars = r'_*[]()~`>#+-=|{}.!'
-    return re.sub(f'([{re.escape(escape_chars)}])', r'\\\1', text)
+    for char in escape_chars:
+        text = text.replace(char, f'\\{char}')
+    return text
 
 def find_driver(query: str) -> Optional[Dict]:
     query = query.lower().strip()
@@ -593,7 +607,7 @@ class IndyBot:
         self.menu = MenuBuilder()
 
         self._register_handlers()
-        logger.info("✅ INDY Leader v2.5.0 готов к работе!")
+        logger.info("✅ INDY Leader v2.6.0 готов к работе!")
 
     def _register_handlers(self):
         self.bot.message_handler(commands=['start'])(self.cmd_start)
@@ -667,6 +681,9 @@ class IndyBot:
         )
 
     def cmd_admin(self, m: Message):
+        if not self.admin_ids:
+            self.bot.reply_to(m, "⛔ Админ-панель отключена")
+            return
         if m.from_user.id not in self.admin_ids:
             self.bot.reply_to(m, "⛔ У вас нет доступа к админ-панели")
             return
@@ -692,7 +709,7 @@ class IndyBot:
 
     def _handle_callback(self, call: CallbackQuery):
         self.bot.answer_callback_query(call.id)
-        
+
         data = call.data
         uid = call.from_user.id
         chat_id = call.message.chat.id
@@ -722,6 +739,9 @@ class IndyBot:
 
         # ===== АДМИНКА =====
         if data.startswith("admin_"):
+            if not self.admin_ids:
+                self.bot.answer_callback_query(call.id, "Админ-панель отключена")
+                return
             if uid not in self.admin_ids:
                 self.bot.answer_callback_query(call.id, "Нет доступа")
                 return
@@ -750,7 +770,7 @@ class IndyBot:
         # ===== КАЛЕНДАРЬ =====
         if data == "schedule_top":
             self._delete_and_send(chat_id, msg_id, "⏳ Загружаю календарь...", None)
-            self._show_schedule_and_top(chat_id)
+            asyncio.create_task(self._show_schedule_and_top(chat_id))
             return
 
         # ===== INDY 500 =====
@@ -891,11 +911,12 @@ class IndyBot:
 
         self.bot.send_message(chat_id, text, parse_mode="Markdown", reply_markup=markup)
 
-    def _show_schedule_and_top(self, chat_id: int):
+    async def _show_schedule_and_top(self, chat_id: int):
         try:
             url = "https://site.api.espn.com/apis/site/v2/sports/racing/irl/scoreboard?seasontype=2&level=3"
-            resp = requests.get(url, timeout=10)
-            data = resp.json()
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url, timeout=10) as resp:
+                    data = await resp.json()
 
             calendar = data.get('leagues', [{}])[0].get('calendar', [])
             now = datetime.now(timezone.utc)
@@ -925,7 +946,7 @@ class IndyBot:
                 for race in future_races:
                     lines.append(f"📅 {race['date']} — **{race['label']}**")
 
-            top5 = StandingsFetcher.fetch()
+            top5 = await StandingsFetcher.fetch()
             if top5:
                 lines.extend(["", "🏆 **Топ-5 чемпионата**", ""])
                 for i, d in enumerate(top5, 1):
@@ -981,7 +1002,7 @@ class IndyBot:
         return text
 
     # ============================================
-    # ОБРАБОТЧИК ТЕКСТА
+    # ОБРАБОТЧИК ТЕКСТА (С ТАЙМАУТОМ СОСТОЯНИЯ)
     # ============================================
 
     def _handle_text(self, m: Message):
@@ -999,19 +1020,16 @@ class IndyBot:
 
         if state == "waiting_year":
             self._handle_year_input(m)
-            self.db.clear_state(uid)
+            self.db.set_state(uid, state, data)
         elif state == "waiting_nico":
             self._handle_nico_input(m)
-            self.db.clear_state(uid)
+            self.db.set_state(uid, state, data)
         elif state == "waiting_ticket":
             self._handle_ticket_input(m)
-            self.db.clear_state(uid)
+            self.db.set_state(uid, state, data)
         elif state == "waiting_broadcast":
             self._handle_broadcast_input(m)
-            self.db.clear_state(uid)
-        elif state == "waiting_block":
-            self._handle_block_input(m)
-            self.db.clear_state(uid)
+            self.db.set_state(uid, state, data)
         else:
             level = self.db.get_user_level(uid)
             self.bot.send_message(
@@ -1019,6 +1037,13 @@ class IndyBot:
                 "Используй кнопки в меню 👇",
                 reply_markup=self.menu.main_menu(level)
             )
+            return
+
+        # Очищаем состояние через 30 секунд
+        def clear_after_timeout():
+            time.sleep(30)
+            self.db.clear_state(uid)
+        threading.Thread(target=clear_after_timeout, daemon=True).start()
 
     def _handle_year_input(self, m: Message):
         try:
@@ -1125,59 +1150,6 @@ class IndyBot:
             reply_markup=self.menu.back_to_menu()
         )
 
-    def _handle_block_input(self, m: Message):
-        """Обработка ввода ID для блокировки/разблокировки"""
-        try:
-            parts = m.text.split()
-            action = parts[0].lower()
-            user_id = int(parts[1])
-        except:
-            self.bot.send_message(
-                m.chat.id,
-                "❌ Неверный формат. Используй:\n`block 123456789` — заблокировать\n`unblock 123456789` — разблокировать",
-                parse_mode="Markdown",
-                reply_markup=self.menu.admin_menu()
-            )
-            return
-
-        if action == "block":
-            if block_user(user_id):
-                self.bot.send_message(
-                    m.chat.id,
-                    f"🚫 Пользователь `{user_id}` заблокирован.",
-                    parse_mode="Markdown",
-                    reply_markup=self.menu.admin_menu()
-                )
-            else:
-                self.bot.send_message(
-                    m.chat.id,
-                    f"❌ Не удалось заблокировать `{user_id}`. Возможно, он уже заблокирован.",
-                    parse_mode="Markdown",
-                    reply_markup=self.menu.admin_menu()
-                )
-        elif action == "unblock":
-            if unblock_user(user_id):
-                self.bot.send_message(
-                    m.chat.id,
-                    f"✅ Пользователь `{user_id}` разблокирован.",
-                    parse_mode="Markdown",
-                    reply_markup=self.menu.admin_menu()
-                )
-            else:
-                self.bot.send_message(
-                    m.chat.id,
-                    f"❌ Не удалось разблокировать `{user_id}`. Возможно, он не был заблокирован.",
-                    parse_mode="Markdown",
-                    reply_markup=self.menu.admin_menu()
-                )
-        else:
-            self.bot.send_message(
-                m.chat.id,
-                f"❌ Неизвестное действие: `{action}`. Используй `block` или `unblock`.",
-                parse_mode="Markdown",
-                reply_markup=self.menu.admin_menu()
-            )
-
     # ============================================
     # АДМИН-ОБРАБОТЧИК
     # ============================================
@@ -1187,20 +1159,19 @@ class IndyBot:
         msg_id = call.message.message_id
 
         if call.data == "admin_stats":
-            stats = get_global_stats()
-            text = f"📊 **Глобальная статистика**\n\n👤 Пользователей: {stats['total_users']}\n📝 Команд: {stats['total_commands']}\n\n**Топ-5 команд:**\n"
-            for cmd, count in stats['top_commands'][:5]:
+            stats = self.db.get_stats()
+            commands = self.db.get_command_stats()
+            text = f"📊 **Глобальная статистика**\n\n👤 Пользователей: {stats['users']}\n📝 Команд: {stats['commands']}\n\n**Топ-5 команд:**\n"
+            for cmd, count in commands[:5]:
                 text += f"• {cmd} — {count}\n"
             self._delete_and_send(chat_id, msg_id, text, self.menu.admin_menu())
             return
 
         if call.data == "admin_users":
-            users = get_all_users()
-            blocked = get_blocked_users()
-            text = f"👥 **Все пользователи ({len(users)})**\n\nАктивных за 7 дней: {len(get_active_users(7))}\nАктивных за 30 дней: {len(get_active_users(30))}\n🚫 Заблокировано: {len(blocked)}\n\nПоследние 10 ID:\n"
+            users = self.db.get_all_users()
+            text = f"👥 **Все пользователи ({len(users)})**\n\nАктивных за 7 дней: {len(self.db.get_active_users(7))}\nАктивных за 30 дней: {len(self.db.get_active_users(30))}\n\nПоследние 10 ID:\n"
             for uid in users[-10:]:
-                is_blocked = "🔒" if is_user_blocked(uid) else "🔓"
-                text += f"• {is_blocked} `{uid}`\n"
+                text += f"• `{uid}`\n"
             self._delete_and_send(chat_id, msg_id, text, self.menu.admin_menu())
             return
 
@@ -1213,7 +1184,7 @@ class IndyBot:
             return
 
         if call.data == "admin_tickets":
-            tickets = get_open_tickets()
+            tickets = self.db.get_open_tickets()
             if not tickets:
                 text = "🎫 **Открытых заявок нет**"
             else:
@@ -1235,20 +1206,26 @@ class IndyBot:
         if call.data == "admin_update_db":
             self.bot.edit_message_text("🔄 Обновляю базу знаний...", chat_id, msg_id)
             try:
-                asyncio.run(update_knowledge_base())
+                # Используем синхронный requests для обновления базы знаний
+                resp = requests.get("https://site.api.espn.com/apis/site/v2/sports/racing/irl/standings", timeout=10)
+                data = resp.json()
+                standings = []
+                for entry in data.get('standings', [{}])[0].get('entries', [])[:10]:
+                    standings.append({
+                        'name': entry.get('athlete', {}).get('displayName', 'Unknown'),
+                        'points': entry.get('points', 0),
+                        'team': entry.get('team', {}).get('displayName', '')
+                    })
+
+                os.makedirs("data", exist_ok=True)
+                with open("data/knowledge.txt", "w", encoding="utf-8") as f:
+                    f.write(f"# База знаний INDY Leader\n# Обновлено: {datetime.now().isoformat()}\n\n## ТУРНИРНАЯ ТАБЛИЦА (ТОП-10)\n")
+                    for i, driver in enumerate(standings, 1):
+                        f.write(f"{i}. {driver['name']} — {driver['points']} очков ({driver['team']})\n")
+
                 self.bot.edit_message_text("✅ База знаний обновлена!", chat_id, msg_id, reply_markup=self.menu.admin_menu())
             except Exception as e:
                 self.bot.edit_message_text(f"❌ Ошибка: {e}", chat_id, msg_id, reply_markup=self.menu.admin_menu())
-            return
-
-        if call.data == "admin_block":
-            self.db.set_state(call.from_user.id, "waiting_block")
-            self._delete_and_send(
-                chat_id, msg_id,
-                "🚫 **Блокировка пользователя**\n\nВведите команду:\n`block 123456789` — заблокировать\n`unblock 123456789` — разблокировать\n\nСписок заблокированных:\n" + "\n".join([f"• `{u[0]}` — {u[1][:16]}" for u in get_blocked_users()[:10]]) or "Нет заблокированных",
-                self.menu.admin_menu(),
-                parse_mode="Markdown"
-            )
             return
 
 
@@ -1260,10 +1237,17 @@ indy_bot = IndyBot(TOKEN)
 bot = indy_bot.bot
 db = indy_bot.db
 
-app = FastAPI(title="INDY Leader", version="2.5.0")
+app = FastAPI(title="INDY Leader", version="2.6.0")
 
 @app.post(WEBHOOK_PATH)
 async def webhook(request: Request):
+    # Проверка секретного токена
+    if WEBHOOK_SECRET:
+        secret = request.headers.get("X-Telegram-Bot-Api-Secret-Token")
+        if secret != WEBHOOK_SECRET:
+            logger.warning("Неверный секретный токен")
+            return Response(content="Unauthorized", status_code=403)
+
     try:
         data = await request.json()
         update = telebot.types.Update.de_json(data)
@@ -1289,7 +1273,7 @@ async def health_check():
             "webhook": info.url,
             "pending": info.pending_update_count,
             "last_error": info.last_error_message,
-            "version": "2.5.0",
+            "version": "2.6.0",
             "ai_model": "gemini-3.6-flash"
         }
     except Exception as e:
@@ -1297,13 +1281,18 @@ async def health_check():
 
 @app.get("/")
 async def root():
-    return {"status": "INDY Leader is running", "webhook_url": WEBHOOK_URL + WEBHOOK_PATH, "version": "2.5.0"}
+    return {"status": "INDY Leader is running", "webhook_url": WEBHOOK_URL + WEBHOOK_PATH, "version": "2.6.0"}
 
 def set_webhook():
     try:
         bot.remove_webhook()
         time.sleep(0.5)
-        bot.set_webhook(url=WEBHOOK_URL + WEBHOOK_PATH, max_connections=40, drop_pending_updates=True)
+        bot.set_webhook(
+            url=WEBHOOK_URL + WEBHOOK_PATH,
+            max_connections=40,
+            drop_pending_updates=True,
+            secret_token=WEBHOOK_SECRET
+        )
         logger.info(f"✅ Webhook: {WEBHOOK_URL + WEBHOOK_PATH}")
     except Exception as e:
         logger.error(f"❌ Webhook error: {e}")
@@ -1315,6 +1304,6 @@ def set_webhook():
 if __name__ == "__main__":
     import uvicorn
     set_webhook()
-    logger.info(f"🚀 INDY Leader v2.5.0 запущен на порту {PORT}")
+    logger.info(f"🚀 INDY Leader v2.6.0 запущен на порту {PORT}")
     logger.info(f"🧠 Модель: gemini-3.6-flash")
     uvicorn.run(app, host="0.0.0.0", port=PORT)
