@@ -1,5 +1,4 @@
- #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
+# блять нахуя я вообще полез
 
 """
 I.N.D.Y Leader v2.6.0 — адаптивный гид по IndyCar
@@ -365,7 +364,7 @@ class MenuBuilder:
 
     @staticmethod
     def _menu_novice() -> IKM:
-        markup = IKM(row_width=2)
+        markup = IKM(row_width=3)
         buttons = [
             ("📖 Гайд", "guide_intro"),
             ("🏁 Календарь", "schedule_top"),
