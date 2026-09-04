@@ -3,7 +3,8 @@ requests==2.31.0
 fastapi==0.140.0
 uvicorn[standard]==0.51.0
 python-dotenv==1.0.0
-schedule==1.2.0
-feedparser==6.0.10
+feedparser>=6.0.14
 aiohttp==3.9.0
-googletrans-modified
+deep-translator==1.11.4
+schedule==1.2.0
+google-genai>=1.66.0
